@@ -1,0 +1,76 @@
+# ============================================================
+# XFSCI Python Dependencies
+# ============================================================
+# Install: pip install -r requirements.txt
+# ============================================================
+
+# --- Core Data Science ---
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# --- Deep Learning (PyTorch) ---
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
+
+# --- Graph Neural Network (Layer 2: Cloud Intelligence) ---
+torch-geometric>=2.4.0
+
+# --- Reinforcement Learning (Layer 4: RL Simulator Offline) ---
+gymnasium>=0.29.0
+stable-baselines3>=2.1.0
+
+# --- AI Agent (Layer 4 Primary: Gemini + RAG) ---
+google-generativeai>=0.3.0     # Gemini Flash API
+chromadb>=0.4.0                # Vector store untuk RAG
+sentence-transformers>=2.2.0   # Embedding model (all-MiniLM-L6-v2)
+langchain>=0.1.0               # AI Agent framework
+langchain-google-genai>=1.0.0  # Langchain Gemini integration
+langchain-community>=0.0.10   # Community vector store integrations
+
+# --- Precision Optimizer (ML Regression) ---
+xgboost>=2.0.0
+joblib>=1.3.0
+
+# --- Explainable AI (Layer 6: Explainability) ---
+shap>=0.43.0
+lime>=0.2.0
+
+# --- Federated Learning (Layer 7: FL) ---
+flwr>=1.6.0
+flwr[simulation]>=1.6.0
+
+# --- Time-Series & Generative AI ---
+tslearn>=0.6.0
+
+# --- Prometheus & Monitoring Scraping ---
+requests>=2.31.0
+prometheus-api-client>=0.5.3
+
+# --- Backend API (FastAPI) ---
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+pydantic>=2.5.0
+
+# --- Database ---
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+
+# --- Visualization & Analysis ---
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly>=5.18.0
+
+# --- Kubernetes Client ---
+kubernetes>=28.1.0
+
+# --- Utilities ---
+pyyaml>=6.0.1
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+loguru>=0.7.0
+rich>=13.7.0
+

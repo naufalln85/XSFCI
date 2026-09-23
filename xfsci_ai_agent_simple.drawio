@@ -1,0 +1,163 @@
+<mxfile host="app.diagrams.net" modified="2026-09-21T09:10:00.000Z" agent="XFSCI-Agent-Simple" version="24.7.17">
+  <diagram id="xfsci-agent-simple" name="XFSCI — AI Agent Sederhana">
+    <mxGraphModel dx="1600" dy="950" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="950" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ==================== HEADER TITLE ==================== -->
+        <mxCell id="titleBox" value="&lt;b style='font-size:18px;color:#1A237E;'&gt;🤖 XFSCI: Arsitektur AI Agent Sederhana (Untuk Apa &amp; Kemana Saja)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:11px;color:#555;'&gt;Penjelasan Alur Logis: Siapa yang Menghitung, Siapa yang Menyediakan Panduan, Siapa yang Berpikir, dan Siapa yang Menjaga Keamanan&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8EAF6;strokeColor=#3F51B5;strokeWidth=1.5;align=center;verticalAlign=middle;arcSize=6;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="20" width="1500" height="55" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== GROUP 1: PENYEDIA FAKTA & PANDUAN (KIRI) ==================== -->
+        <mxCell id="g1Bg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#8BC34A;strokeWidth=1.5;opacity=50;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="50" y="95" width="450" height="690" as="geometry"/>
+        </mxCell>
+        <mxCell id="g1Title" value="&lt;b style='font-size:12px;color:#33691E;'&gt;BAGIAN 1: SUMBER DATA &amp; PERSIAPAN FAKTA (MATA &amp; INGATAN)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="65" y="102" width="420" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Prometheus -->
+        <mxCell id="boxProm" value="&lt;b style='font-size:12px'&gt;📊 1. Prometheus &amp; Sensor&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;UNTUK APA?&lt;/b&gt; Mengambil data metrik mentah (CPU, RAM, RPS, Latensi)&lt;br&gt;&lt;b&gt;KEMANA?&lt;/b&gt; Mengirim data mentah ke &lt;b&gt;Pandas&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#00897B;strokeColor=#004D40;strokeWidth=2;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="130" width="410" height="70" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Pandas -->
+        <mxCell id="boxPandas" value="&lt;b style='font-size:13px'&gt;🐼 2. Pandas (Kalkulator Pasti)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b style='color:#C8E6C9'&gt;UNTUK APA?&lt;/b&gt;&lt;br&gt;• Menghitung angka pasti: kenaikan RAM (+12MB/menit), persentil, error %&lt;br&gt;• &lt;i&gt;Mencegah AI halusinasi salah hitung angka!&lt;/i&gt;&lt;br&gt;&lt;b style='color:#C8E6C9'&gt;KEMANA?&lt;/b&gt;&lt;br&gt;1. Kirim hasil hitungan angka pasti ke &lt;b&gt;Gemini Flash&lt;/b&gt;&lt;br&gt;2. Kirim angka ke &lt;b&gt;Scoring Engine&lt;/b&gt; untuk cek bahaya&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2E7D32;strokeColor=#1B5E20;strokeWidth=2.5;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="235" width="410" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Scoring Engine -->
+        <mxCell id="boxScoring" value="&lt;b style='font-size:12px'&gt;📐 3. Scoring Engine (Pengukur Bahaya)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;UNTUK APA?&lt;/b&gt; Mengukur seberapa parah insiden (Skor 0 - 100: CRITICAL / NORMAL)&lt;br&gt;&lt;b&gt;KEMANA?&lt;/b&gt; Kirim status keparahan ke &lt;b&gt;Gemini Flash&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E65100;strokeColor=#BF360C;strokeWidth=2;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="385" width="410" height="75" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: RAG SOP -->
+        <mxCell id="boxRAG" value="&lt;b style='font-size:12px'&gt;📚 4. RAG SOP (Buku Pedoman / Runbook)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;UNTUK APA?&lt;/b&gt; Menyimpan 6 SOP industri (Misal: &quot;SOP-03: Kalau spike + memory bocor, scale dulu baru restart&quot;)&lt;br&gt;&lt;b&gt;KEMANA?&lt;/b&gt; Kirim petunjuk SOP yang relevan ke &lt;b&gt;Gemini Flash&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#283593;strokeColor=#1A237E;strokeWidth=2;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="490" width="410" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Experience Memory -->
+        <mxCell id="boxExp" value="&lt;b style='font-size:12px'&gt;🧪 5. Experience Memory (Ingatan Masa Lalu)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;UNTUK APA?&lt;/b&gt; Mengingat insiden serupa yang pernah sukses di masa lalu&lt;br&gt;&lt;b&gt;KEMANA?&lt;/b&gt;&lt;br&gt;• Kirim referensi solusi sukses masa lalu ke &lt;b&gt;Gemini Flash&lt;/b&gt;&lt;br&gt;• Menerima simpanan pengalaman baru dari &lt;b&gt;Evaluasi Hasil&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A148C;strokeColor=#311B92;strokeWidth=2;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="610" width="410" height="100" as="geometry"/>
+        </mxCell>
+
+
+        <!-- ==================== GROUP 2: PUSAT BERPIKIR / OTAK (TENGAH) ==================== -->
+        <mxCell id="g2Bg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#E91E63;strokeWidth=1.5;opacity=50;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="540" y="95" width="480" height="690" as="geometry"/>
+        </mxCell>
+        <mxCell id="g2Title" value="&lt;b style='font-size:12px;color:#880E4F;'&gt;BAGIAN 2: PUSAT PENALARAN &amp; KEPUTUSAN (OTAK AI)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="555" y="102" width="450" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Gemini Flash -->
+        <mxCell id="boxGemini" value="&lt;b style='font-size:14px'&gt;🤖 6. Google Gemini 2.0 Flash (Otak Penentu)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:11px'&gt;&lt;b style='color:#FFCDD2'&gt;UNTUK APA? (BERPIKIR &amp; MENIMBANG RISIKO)&lt;/b&gt;&lt;br&gt;Membaca 4 hal sekaligus:&lt;br&gt;1. Angka pasti dari Pandas&lt;br&gt;2. Tingkat keparahan dari Scoring&lt;br&gt;3. Aturan baku dari RAG SOP&lt;br&gt;4. Pengalaman sukses masa lalu dari Experience Memory&lt;br&gt;&lt;br&gt;&lt;b&gt;HASIL PIKIRAN:&lt;/b&gt; Menyusun urutan strategi perbaikan (Step 1, Step 2)&lt;br&gt;&lt;br&gt;&lt;b style='color:#FFCDD2'&gt;KEMANA?&lt;/b&gt;&lt;br&gt;Mengirim instruksi keputusan (format JSON) ke &lt;b&gt;7 Aksi Terkunci&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#AD1457;strokeColor=#880E4F;strokeWidth=3;fontSize=11;fontColor=#FFF;arcSize=14;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="140" width="440" height="240" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: 7 Aksi Terkunci -->
+        <mxCell id="boxAction" value="&lt;b style='font-size:13px'&gt;🔒 7. Aksi Terkunci (Pydantic Schema)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;UNTUK APA?&lt;/b&gt; Mengunci agar AI HANYA BISA memilih salah satu dari 7 aksi:&lt;br&gt;&lt;i&gt;no_op · restart_pod · scale_out · scale_in · rate_limit · migrate · escalate&lt;/i&gt;&lt;br&gt;• &lt;b&gt;Anti-Bahaya:&lt;/b&gt; AI mustahil mengarang perintah acak yang merusak!&lt;br&gt;&lt;b&gt;KEMANA?&lt;/b&gt; Mengirim aksi terpilih ke &lt;b&gt;Guardrails (Satpam Keamanan)&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C2185B;strokeColor=#880E4F;strokeWidth=2;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="440" width="440" height="130" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Fallback -->
+        <mxCell id="boxFallback" value="&lt;b&gt;⚙️ Rule-Based Fallback (Cadangan Darurat)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Jika API Gemini internet putus / kuota habis, aturan statis otomatis aktif&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#880E4F;strokeColor=#4A148C;strokeWidth=1;fontSize=10;fontColor=#FFF;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="560" y="620" width="440" height="50" as="geometry"/>
+        </mxCell>
+
+
+        <!-- ==================== GROUP 3: VALIDASI, EKSEKUSI & BELAJAR (KANAN) ==================== -->
+        <mxCell id="g3Bg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#FFB300;strokeWidth=1.5;opacity=50;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="95" width="490" height="690" as="geometry"/>
+        </mxCell>
+        <mxCell id="g3Title" value="&lt;b style='font-size:12px;color:#E65100;'&gt;BAGIAN 3: PENGUJIAN KEAMANAN, EKSEKUSI &amp; PEMBELAJARAN&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="1075" y="102" width="460" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Guardrails -->
+        <mxCell id="boxGuard" value="&lt;b style='font-size:13px'&gt;🛡️ 8. Guardrails (Satpam Keamanan)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;UNTUK APA?&lt;/b&gt; Memeriksa rencana aksi sebelum disentuh ke server:&lt;br&gt;1. Cek Cooldown (jangan ubah pod yang baru diubah &amp;lt; 10 menit)&lt;br&gt;2. Cek Keyakinan (Confidence wajib &amp;gt; 80%)&lt;br&gt;3. Cek Blacklist (dilarang restart pod sistem seperti etcd)&lt;br&gt;&lt;b&gt;KEMANA?&lt;/b&gt; Jika lolos ✅, kirim ke &lt;b&gt;Executor Kubectl&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFA000;strokeColor=#FF6F00;strokeWidth=2;fontSize=11;fontColor=#333;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="140" width="450" height="130" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Executor -->
+        <mxCell id="boxExec" value="&lt;b style='font-size:13px'&gt;⚡ 9. Executor (Eksekusi Nyata K8s)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;UNTUK APA?&lt;/b&gt;&lt;br&gt;• Menjalankan perintah nyata: &lt;code&gt;kubectl scale / restart&lt;/code&gt;&lt;br&gt;• Jika pasca-eksekusi server malah tambah rusak -&gt; &lt;b&gt;Auto-Rollback!&lt;/b&gt;&lt;br&gt;&lt;b&gt;KEMANA?&lt;/b&gt;&lt;br&gt;1. Perintah diterapkan ke &lt;b&gt;Server Kubernetes Nyata&lt;/b&gt;&lt;br&gt;2. Mengirim sinyal selesai ke &lt;b&gt;Evaluasi Hasil (Reward)&lt;/b&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#00838F;strokeColor=#006064;strokeWidth=2;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="320" width="450" height="130" as="geometry"/>
+        </mxCell>
+
+        <!-- Box: Evaluasi Reward -->
+        <mxCell id="boxReward" value="&lt;b style='font-size:13px'&gt;📐 10. Evaluasi Hasil (Reward / Post-Score)&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b style='color:#E1BEE7'&gt;UNTUK APA?&lt;/b&gt;&lt;br&gt;Mengecek apakah aksi berhasil menyembuhkan server:&lt;br&gt;• Latensi turun dari 850ms -&gt; 65ms?&lt;br&gt;• Error hilang dari 18% -&gt; 0%?&lt;br&gt;• Menghitung nilai skor sukses: &lt;b&gt;Reward = 92 / 100&lt;/b&gt;&lt;br&gt;&lt;b style='color:#E1BEE7'&gt;KEMANA? (FEEDBACK LOOP PEMBELAJARAN)&lt;/b&gt;&lt;br&gt;Menyimpan pengalaman sukses ini kembali ke &lt;b&gt;Experience Memory&lt;/b&gt;&lt;br&gt;agar di masa depan AI langsung hafal solusinya!&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#7B1FA2;strokeColor=#4A148C;strokeWidth=2.5;fontSize=11;fontColor=#FFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="500" width="450" height="160" as="geometry"/>
+        </mxCell>
+
+
+        <!-- ==================== CONNECTING ARROWS ==================== -->
+        <!-- Prometheus -> Pandas -->
+        <mxCell id="e_prom_pandas" value="Data Metrik Mentah" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#00897B;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=9;fontColor=#004D40;fontStyle=1;" edge="1" parent="1" source="boxProm" target="boxPandas">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Pandas -> Scoring -->
+        <mxCell id="e_pandas_scoring" value="Angka Statistik" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#2E7D32;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=9;fontColor=#1B5E20;fontStyle=1;" edge="1" parent="1" source="boxPandas" target="boxScoring">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Pandas -> Gemini -->
+        <mxCell id="e_pandas_gemini" value="Fakta Angka Eksak (RAM 94%, Delta +12MB)" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#2E7D32;strokeWidth=2.5;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;fontSize=9;fontColor=#1B5E20;fontStyle=1;" edge="1" parent="1" source="boxPandas" target="boxGemini">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Scoring -> Gemini -->
+        <mxCell id="e_scoring_gemini" value="Tingkat Keparahan (CRITICAL 88/100)" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#E65100;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.6;entryDx=0;entryDy=0;fontSize=9;fontColor=#BF360C;fontStyle=1;" edge="1" parent="1" source="boxScoring" target="boxGemini">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- RAG -> Gemini -->
+        <mxCell id="e_rag_gemini" value="Pedoman SOP-03" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#283593;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.85;entryDx=0;entryDy=0;fontSize=9;fontColor=#1A237E;fontStyle=1;" edge="1" parent="1" source="boxRAG" target="boxGemini">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ExpMem -> Gemini -->
+        <mxCell id="e_exp_gemini" value="Solusi Sukses Masa Lalu" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#4A148C;strokeWidth=2;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0.2;entryY=1;entryDx=0;entryDy=0;fontSize=9;fontColor=#311B92;fontStyle=1;curved=1;" edge="1" parent="1" source="boxExp" target="boxGemini">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Gemini -> 7 Actions -->
+        <mxCell id="e_gemini_action" value="Keputusan Terstruktur (JSON)" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#AD1457;strokeWidth=2.5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=9;fontColor=#880E4F;fontStyle=1;" edge="1" parent="1" source="boxGemini" target="boxAction">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- 7 Actions -> Guardrails -->
+        <mxCell id="e_action_guard" value="Aksi: [scale_out lalu restart]" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#C2185B;strokeWidth=2.5;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=9;fontColor=#880E4F;fontStyle=1;" edge="1" parent="1" source="boxAction" target="boxGuard">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Guardrails -> Executor -->
+        <mxCell id="e_guard_exec" value="✅ Aman &amp; Disetujui (Approved)" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#FFA000;strokeWidth=2.5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=9;fontColor=#E65100;fontStyle=1;" edge="1" parent="1" source="boxGuard" target="boxExec">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Executor -> Evaluasi -->
+        <mxCell id="e_exec_reward" value="Aksi Selesai Diterapkan" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#00838F;strokeWidth=2.5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=9;fontColor=#006064;fontStyle=1;" edge="1" parent="1" source="boxExec" target="boxReward">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== THE BIG LEARNING FEEDBACK LOOP ==================== -->
+        <mxCell id="e_feedback" value="🔄 FEEDBACK BELAJAR: Simpan Keberhasilan (S, A, R=92, S') ke Ingatan Masa Lalu" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#7B1FA2;strokeWidth=3;dashed=1;dashPattern=8 4;exitX=0;exitY=0.7;exitDx=0;exitDy=0;entryX=1;entryY=0.7;entryDx=0;entryDy=0;fontSize=11;fontColor=#4A148C;fontStyle=1;curved=1;" edge="1" parent="1" source="boxReward" target="boxExp">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="800" y="750"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ==================== BOTTOM TAKEAWAY ==================== -->
+        <mxCell id="takeawayBox" value="&lt;b&gt;💡 Rangkuman 1 Kalimat untuk Dosen:&lt;/b&gt; &lt;font style='color:#333;'&gt;&quot;Pandas menghitung fakta angka agar tidak ada halusinasi, RAG memberi buku panduan SOP, Gemini Flash bertindak sebagai otak yang bernalar dan memutuskan strategi, Guardrails memastikan aksi aman, dan Evaluasi Hasil menyimpan pengalaman sukses kembali ke memori agar AI terus bertambah pintar.&quot;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFDE7;strokeColor=#FFF59D;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=11;arcSize=8;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="805" width="1500" height="45" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

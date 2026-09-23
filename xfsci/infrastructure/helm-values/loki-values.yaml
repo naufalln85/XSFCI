@@ -1,0 +1,109 @@
+# ============================================================
+# Grafana Loki + Promtail Helm Values
+# ============================================================
+# Chart: grafana/loki-stack
+#
+# Install command:
+#   helm install loki grafana/loki-stack \
+#     --namespace monitoring \
+#     -f loki-values.yaml
+# ============================================================
+
+# --- Loki Server ---
+loki:
+  enabled: true
+  
+  # Persistence untuk menyimpan log
+  persistence:
+    enabled: true
+    size: 5Gi
+  
+  # Konfigurasi Loki
+  config:
+    # Retention: simpan log 72 jam (3 hari)
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 72h
+    
+    # Limits per tenant
+    limits_config:
+      # Maksimum ukuran log per push
+      ingestion_rate_mb: 10
+      ingestion_burst_size_mb: 20
+      # Maksimum entries per query
+      max_entries_limit_per_query: 5000
+      # Reject old samples
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h  # 7 hari
+
+  # Expose Loki via NodePort
+  service:
+    type: NodePort
+    nodePort: 30100
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+# --- Promtail (Log Collector Agent) ---
+# Berjalan sebagai DaemonSet di setiap node, mengumpulkan log kontainer
+promtail:
+  enabled: true
+  
+  config:
+    # Lokasi posisi baca terakhir (agar tidak duplikat)
+    positions:
+      filename: /run/promtail/positions.yaml
+    
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+    
+    scrape_configs:
+      # Scrape semua log kontainer di Kubernetes
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        pipeline_stages:
+          # Parse log JSON jika ada
+          - json:
+              expressions:
+                level: level
+                msg: msg
+                timestamp: timestamp
+          # Tambahkan label dari metadata Kubernetes
+          - labels:
+              level:
+        relabel_configs:
+          # Simpan nama namespace
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          # Simpan nama pod
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          # Simpan nama container
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          # Simpan nama node
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          # Simpan label app
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+
+# --- Grafana (sudah diinstall lewat kube-prometheus-stack) ---
+grafana:
+  enabled: false   # Jangan install ulang, sudah ada dari prometheus stack

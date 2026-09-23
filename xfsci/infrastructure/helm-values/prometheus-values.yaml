@@ -1,0 +1,139 @@
+# ============================================================
+# Prometheus + Grafana + kube-state-metrics Helm Values
+# ============================================================
+# Chart: prometheus-community/kube-prometheus-stack
+#
+# Install command:
+#   helm install prometheus prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace \
+#     -f prometheus-values.yaml
+# ============================================================
+
+# --- Prometheus Server ---
+prometheus:
+  prometheusSpec:
+    # Scrape setiap 5 detik (default 30s terlalu lambat untuk riset)
+    scrapeInterval: "5s"
+    evaluationInterval: "5s"
+    
+    # Retention: simpan data 7 hari
+    retention: "7d"
+    retentionSize: "10GB"
+    
+    # Resource limits di dalam kind cluster
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+    
+    # Storage persistent
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+  # Expose Prometheus via NodePort agar bisa diakses dari host
+  service:
+    type: NodePort
+    nodePort: 30090
+
+# --- Grafana ---
+grafana:
+  enabled: true
+  adminPassword: "xfsci-admin-2026"
+  
+  # Expose Grafana via NodePort
+  service:
+    type: NodePort
+    nodePort: 30030
+  
+  # Pre-install dashboards
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: 'XFSCI'
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+
+  # Default datasources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-kube-prometheus-prometheus.monitoring:9090
+          access: proxy
+          isDefault: true
+        - name: Loki
+          type: loki
+          url: http://loki.monitoring:3100
+          access: proxy
+
+  # Grafana resource limits
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+# --- kube-state-metrics ---
+# Mengumpulkan status Kubernetes objects (pods, deployments, nodes)
+kubeStateMetrics:
+  enabled: true
+
+# --- Node Exporter ---
+# Mengumpulkan metrik hardware/OS dari setiap node
+nodeExporter:
+  enabled: true
+
+# --- Alertmanager ---
+# Untuk fase awal, disable alertmanager (kita pakai AI prediction)
+alertmanager:
+  enabled: false
+
+# --- Additional scrape configs ---
+# Menambahkan scrape target custom untuk pod-pod di namespace demo
+prometheus:
+  prometheusSpec:
+    additionalScrapeConfigs:
+      # Scrape semua pods yang memiliki annotation prometheus.io/scrape: "true"
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: kubernetes_pod_name
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: replace
+            target_label: kubernetes_node

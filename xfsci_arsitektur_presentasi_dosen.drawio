@@ -1,0 +1,306 @@
+<mxfile host="app.diagrams.net" modified="2026-09-21T04:05:00.000Z" agent="XFSCI-Simple" version="24.7.17">
+  <diagram id="xfsci-simple" name="XFSCI — Arsitektur Sederhana untuk Presentasi">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ==================== TITLE ==================== -->
+        <mxCell id="title" value="&lt;b style='font-size:16px'&gt;XFSCI: Explainable Federated Self-Healing Cloud Infrastructure&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:11px;color:#555'&gt;Arsitektur AI Agent Hybrid dengan Mekanisme RL-Based  —  Gemini Flash + Pandas + RAG + ML Scoring&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontColor=#1A237E;" vertex="1" parent="1">
+          <mxGeometry x="200" y="10" width="1200" height="45" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== ROW 1: INFRASTRUCTURE (4 VM) ==================== -->
+        <mxCell id="vmBg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#4CAF50;strokeWidth=2;opacity=40;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="530" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="vmLabel" value="&lt;b&gt;☸️ 1 Server · 4 VM · 1 Kubernetes Cluster&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=11;fontColor=#2E7D32;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="55" y="75" width="350" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="vm1" value="&lt;b&gt;VM 1&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Master&lt;br&gt;Control-Plane&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#43A047;strokeWidth=2;fontSize=10;fontColor=#1B5E20;arcSize=20;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="55" y="100" width="110" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="vm2" value="&lt;b&gt;VM 2&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Worker 1&lt;br&gt;Jakarta (Normal)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#BBDEFB;strokeColor=#1976D2;strokeWidth=2;fontSize=10;fontColor=#0D47A1;arcSize=20;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="180" y="100" width="115" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="vm3" value="&lt;b&gt;VM 3&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Worker 2&lt;br&gt;Bandung (Spike)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#F57C00;strokeWidth=2;fontSize=10;fontColor=#E65100;arcSize=20;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="310" y="100" width="115" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="vm4" value="&lt;b&gt;VM 4&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Worker 3&lt;br&gt;Surabaya (Chaos)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#E53935;strokeWidth=2;fontSize=10;fontColor=#B71C1C;arcSize=20;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="100" width="115" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="vmSpec" value="&lt;font style='font-size:9px;color:#666'&gt;Masing-masing: 4 vCPU · 4 GB RAM · 40 GB Disk  |  Total: 16 vCPU · 16 GB · 160 GB&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="55" y="160" width="500" height="18" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== MAIN FLOW: LEFT TO RIGHT ==================== -->
+
+        <!-- STEP 1: Monitoring -->
+        <mxCell id="monitoring" value="&lt;b style='font-size:13px'&gt;① Monitoring&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;Prometheus · Loki&lt;br&gt;Grafana · OpenTelemetry&lt;br&gt;&lt;br&gt;&lt;i&gt;Scrape metrik setiap 5 detik:&lt;br&gt;CPU, RAM, RPS, Error,&lt;br&gt;Latency, Restarts&lt;/i&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#00897B;strokeColor=#00695C;strokeWidth=2;fontSize=11;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="250" width="195" height="145" as="geometry"/>
+        </mxCell>
+
+        <!-- STEP 2: GNN + ML Prediction -->
+        <mxCell id="gnnPred" value="&lt;b style='font-size:13px'&gt;② Analisis AI&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px'&gt;&lt;b&gt;GNN (PyTorch Geometric)&lt;/b&gt;&lt;br&gt;Peta topologi service,&lt;br&gt;blast radius, root cause&lt;br&gt;&lt;br&gt;&lt;b&gt;LSTM + Transformer&lt;/b&gt;&lt;br&gt;Prediksi failure 15 menit&lt;br&gt;sebelum terjadi&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#5E35B1;strokeColor=#4527A0;strokeWidth=2;fontSize=11;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="295" y="240" width="210" height="165" as="geometry"/>
+        </mxCell>
+
+        <!-- STEP 3: AI AGENT (THE BIG BOX) -->
+        <mxCell id="agentBg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;strokeWidth=3;opacity=50;arcSize=5;" vertex="1" parent="1">
+          <mxGeometry x="560" y="70" width="640" height="530" as="geometry"/>
+        </mxCell>
+        <mxCell id="agentTitle" value="&lt;b style='font-size:14px;color:#BF360C'&gt;③ AI AGENT  —  Mekanisme RL-Based&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:10px;color:#E65100'&gt;Observe → Score → Decide → Act → Reward → Learn&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="580" y="75" width="600" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Pandas (STATE) -->
+        <mxCell id="pandas" value="&lt;b&gt;🐼 Pandas&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;&lt;b&gt;STATE&lt;/b&gt; dalam RL&lt;br&gt;Query PromQL →&lt;br&gt;DataFrame → angka&lt;br&gt;100% akurat&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#43A047;strokeColor=#2E7D32;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=15;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="120" width="130" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Scoring (REWARD FUNCTION) -->
+        <mxCell id="scoring" value="&lt;b&gt;📐 Scoring&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;&lt;b&gt;REWARD&lt;/b&gt; dalam RL&lt;br&gt;Urgency 0-100&lt;br&gt;Rumus deterministik&lt;br&gt;bisa diaudit&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EF6C00;strokeColor=#E65100;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=15;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="225" width="130" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: RAG (KNOWLEDGE) -->
+        <mxCell id="rag" value="&lt;b&gt;📚 RAG&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;ChromaDB + 6 SOP&lt;br&gt;Runbook panduan&lt;br&gt;penanganan insiden&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#283593;strokeColor=#1A237E;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=15;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="330" width="130" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Experience Memory (REPLAY BUFFER) -->
+        <mxCell id="expMem" value="&lt;b&gt;🧪 Experience&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;&lt;b&gt;REPLAY BUFFER&lt;/b&gt;&lt;br&gt;Belajar dari&lt;br&gt;aksi masa lalu&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3949AB;strokeColor=#283593;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=15;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="585" y="425" width="130" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: GEMINI (POLICY NETWORK) -->
+        <mxCell id="gemini" value="&lt;b style='font-size:12px'&gt;🤖 Gemini Flash&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;&lt;b&gt;= POLICY NETWORK&lt;/b&gt; dalam RL&lt;br&gt;&lt;br&gt;Google Gemini 2.0 Flash&lt;br&gt;temp=0.1 (deterministik)&lt;br&gt;Output: JSON terkunci&lt;br&gt;Fallback: Rule-based&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#AD1457;strokeColor=#880E4F;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="755" y="120" width="175" height="125" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Action Schema (ACTION SPACE) -->
+        <mxCell id="actionSchema" value="&lt;b&gt;🔒 7 Aksi Terkunci&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;&lt;b&gt;= ACTION SPACE&lt;/b&gt; dalam RL&lt;br&gt;&lt;br&gt;no_op · restart_pod&lt;br&gt;scale_out · scale_in&lt;br&gt;rate_limit · migrate&lt;br&gt;escalate&lt;br&gt;&lt;i&gt;Pydantic Enum (anti-halusinasi)&lt;/i&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C2185B;strokeColor=#AD1457;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="755" y="260" width="175" height="130" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Guardrails + Sandbox -->
+        <mxCell id="guardrails" value="&lt;b&gt;🛡️ Guardrails&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;5 layer validasi:&lt;br&gt;Cooldown · Confidence gate&lt;br&gt;Circuit breaker · Blacklist&lt;br&gt;Human escalation&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9A825;strokeColor=#F57F17;strokeWidth=2;fontSize=10;fontColor=#333;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="755" y="405" width="175" height="85" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Executor -->
+        <mxCell id="executor" value="&lt;b&gt;⚡ Eksekusi&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Multi-Step Planner&lt;br&gt;Checkpoint + Rollback&lt;br&gt;K8s kubectl exec&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#00838F;strokeColor=#006064;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="970" y="120" width="150" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Precision Optimizer -->
+        <mxCell id="precOpt" value="&lt;b&gt;🎯 ML Optimizer&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;XGBoost Regression&lt;br&gt;Auto-tune replika&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#FFD54F;strokeWidth=2;fontSize=10;fontColor=#333;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="970" y="405" width="150" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Sandbox -->
+        <mxCell id="sandbox" value="&lt;b&gt;🧪 Sandbox&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Dry-run test&lt;br&gt;masalah baru&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFD54F;strokeColor=#F9A825;strokeWidth=2;fontSize=10;fontColor=#333;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="970" y="480" width="150" height="55" as="geometry"/>
+        </mxCell>
+
+        <!-- Inside Agent: Post-Action Score -->
+        <mxCell id="postScore" value="&lt;b&gt;📐 Post-Action&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;&lt;b&gt;= RL REWARD&lt;/b&gt;&lt;br&gt;Score 0-100&lt;br&gt;(error↓ latency↓ mem stable)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#7B1FA2;strokeColor=#4A148C;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="970" y="220" width="150" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- ====== ARROWS INSIDE AGENT ====== -->
+        <!-- Pandas → Scoring -->
+        <mxCell id="ea1" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#E65100;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="pandas" target="scoring">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Scoring → RAG -->
+        <mxCell id="ea2" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#283593;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="scoring" target="rag">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- RAG → ExpMem -->
+        <mxCell id="ea3" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#283593;strokeWidth=1.5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="rag" target="expMem">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Pandas → Gemini -->
+        <mxCell id="ea4" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#AD1457;strokeWidth=2.5;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;curved=1;" edge="1" parent="1" source="pandas" target="gemini">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Scoring → Gemini -->
+        <mxCell id="ea5" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#AD1457;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;curved=1;" edge="1" parent="1" source="scoring" target="gemini">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- RAG → Gemini -->
+        <mxCell id="ea6" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#AD1457;strokeWidth=1.5;dashed=1;dashPattern=6 3;exitX=1;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=1;entryDx=0;entryDy=0;curved=1;" edge="1" parent="1" source="rag" target="gemini">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Gemini → ActionSchema -->
+        <mxCell id="ea7" value="JSON" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#C2185B;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=9;fontColor=#C2185B;fontStyle=2;" edge="1" parent="1" source="gemini" target="actionSchema">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- ActionSchema → Guardrails -->
+        <mxCell id="ea8" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#F57F17;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="actionSchema" target="guardrails">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Guardrails → Executor -->
+        <mxCell id="ea9" value="✅ approved" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#00838F;strokeWidth=2.5;exitX=1;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=9;fontColor=#006064;fontStyle=3;curved=1;" edge="1" parent="1" source="guardrails" target="executor">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Executor → PostScore -->
+        <mxCell id="ea10" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#7B1FA2;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="executor" target="postScore">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- PostScore → ExpMem (FEEDBACK LOOP) -->
+        <mxCell id="ea11" value="💾 simpan &amp; belajar" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#7B1FA2;strokeWidth=2;dashed=1;dashPattern=8 4;exitX=0;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;fontSize=9;fontColor=#7B1FA2;fontStyle=2;curved=1;" edge="1" parent="1" source="postScore" target="expMem">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ====== EXTERNAL ARROWS ====== -->
+        <!-- VMs → Monitoring -->
+        <mxCell id="evm" value="metrik" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#00897B;strokeWidth=2;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=9;fontColor=#00897B;fontStyle=2;" edge="1" parent="1" source="vmBg" target="monitoring">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Monitoring → GNN+Pred -->
+        <mxCell id="emon" value="time-series data" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#5E35B1;strokeWidth=2.5;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=9;fontColor=#5E35B1;fontStyle=2;" edge="1" parent="1" source="monitoring" target="gnnPred">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- GNN+Pred → Pandas (enter agent) -->
+        <mxCell id="epred" value="risk_score, anomaly_type" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#43A047;strokeWidth=2.5;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=9;fontColor=#2E7D32;fontStyle=2;curved=1;" edge="1" parent="1" source="gnnPred" target="pandas">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== RIGHT SIDE: OUTPUT COMPONENTS ==================== -->
+
+        <!-- Executor → Self Healing (back to cluster) -->
+        <mxCell id="selfHeal" value="&lt;b style='font-size:12px'&gt;④ Self-Healing&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;kubectl scale / restart&lt;br&gt;/ migrate / cordon&lt;br&gt;&lt;i&gt;Eksekusi nyata di K8s&lt;/i&gt;&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E65100;strokeColor=#BF360C;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="120" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="eexec" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#E65100;strokeWidth=2.5;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="executor" target="selfHeal">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- Self Healing → VM (loop back) -->
+        <mxCell id="eback" value="healing action" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#E65100;strokeWidth=2;dashed=1;dashPattern=8 4;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;fontSize=9;fontColor=#E65100;fontStyle=2;curved=1;" edge="1" parent="1" source="selfHeal" target="vmBg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- XAI -->
+        <mxCell id="xai" value="&lt;b style='font-size:12px'&gt;⑤ XAI&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Penjelasan keputusan&lt;br&gt;AI Agent (reasoning)&lt;br&gt;+ SHAP / LIME&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8E24AA;strokeColor=#6A1B9A;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="240" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="exai" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#8E24AA;strokeWidth=1.5;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;curved=1;" edge="1" parent="1" source="postScore" target="xai">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Federated Learning -->
+        <mxCell id="fl" value="&lt;b style='font-size:12px'&gt;⑥ Federated&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;Flower Framework&lt;br&gt;3 FL Clients (per Worker)&lt;br&gt;&lt;b&gt;Byzantine-Robust:&lt;/b&gt;&lt;br&gt;Krum / FedMedian&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#00796B;strokeColor=#004D40;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="360" width="160" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="efl" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#00796B;strokeWidth=1.5;dashed=1;dashPattern=6 3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;curved=1;" edge="1" parent="1" source="expMem" target="fl">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Dashboard -->
+        <mxCell id="dashboard" value="&lt;b style='font-size:12px'&gt;⑦ Dashboard&lt;/b&gt;&lt;br&gt;&lt;font style='font-size:9px'&gt;FastAPI + Next.js&lt;br&gt;Live monitoring &amp; log&lt;br&gt;👤 Human operator&lt;br&gt;approve / reject&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C62828;strokeColor=#B71C1C;strokeWidth=2;fontSize=10;fontColor=#FFFFFF;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="495" width="160" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="edash" style="rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeColor=#C62828;strokeWidth=1.5;dashed=1;dashPattern=6 3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;curved=1;" edge="1" parent="1" source="sandbox" target="dashboard">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ==================== BOTTOM: RL COMPARISON TABLE ==================== -->
+        <mxCell id="compBg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#BDBDBD;strokeWidth=1;arcSize=5;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="640" width="1380" height="240" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="compTitle" value="&lt;b style='font-size:13px'&gt;🔄 Perbandingan: Pure RL vs AI Agent XFSCI (Mekanisme RL-Based)&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="40" y="645" width="1380" height="25" as="geometry"/>
+        </mxCell>
+
+        <!-- Table Header -->
+        <mxCell id="th1" value="&lt;b&gt;Konsep RL&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#455A64;strokeColor=#37474F;fontSize=11;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="680" width="130" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="th2" value="&lt;b&gt;Pure RL (PPO/DQN)&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E53935;strokeColor=#C62828;fontSize=11;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="190" y="680" width="300" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="th3" value="&lt;b&gt;AI Agent XFSCI (Kami)&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#43A047;strokeColor=#2E7D32;fontSize=11;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="680" width="370" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="th4" value="&lt;b&gt;Keunggulan&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#1565C0;strokeColor=#0D47A1;fontSize=11;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="680" width="540" height="30" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 1: State -->
+        <mxCell id="r1c1" value="&lt;b&gt;State&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#CFD8DC;fontSize=10;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="60" y="710" width="130" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r1c2" value="Observasi raw dari environment" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#FFCDD2;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="190" y="710" width="300" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r1c3" value="&lt;b&gt;Pandas DataFrame&lt;/b&gt; dari Prometheus (100% akurat)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#C8E6C9;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="490" y="710" width="370" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r1c4" value="Angka eksak dari aritmatika Python, bukan estimasi neural network" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#BBDEFB;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="860" y="710" width="540" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 2: Policy -->
+        <mxCell id="r2c1" value="&lt;b&gt;Policy&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#CFD8DC;fontSize=10;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="60" y="745" width="130" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r2c2" value="Neural network (jutaan episode trial-error)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#FFCDD2;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="190" y="745" width="300" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r2c3" value="&lt;b&gt;Gemini Flash&lt;/b&gt; + RAG SOP + Experience Memory" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#C8E6C9;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="490" y="745" width="370" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r2c4" value="Langsung akurat tanpa training, grounded pada SOP terdokumentasi" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#BBDEFB;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="860" y="745" width="540" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 3: Action -->
+        <mxCell id="r3c1" value="&lt;b&gt;Action&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#CFD8DC;fontSize=10;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="60" y="780" width="130" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r3c2" value="Continuous/discrete action space (bisa random)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#FFCDD2;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="190" y="780" width="300" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r3c3" value="&lt;b&gt;7 aksi Pydantic Enum terkunci&lt;/b&gt; (anti-halusinasi)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#C8E6C9;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="490" y="780" width="370" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r3c4" value="AI tidak bisa mengarang perintah berbahaya di luar daftar" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#BBDEFB;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="860" y="780" width="540" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 4: Reward -->
+        <mxCell id="r4c1" value="&lt;b&gt;Reward&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#CFD8DC;fontSize=10;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="60" y="815" width="130" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r4c2" value="Reward function dipelajari (bisa bias/overfit)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#FFCDD2;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="190" y="815" width="300" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r4c3" value="&lt;b&gt;Post-Action Score deterministik&lt;/b&gt; (error↓ latency↓ mem stable)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#C8E6C9;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="490" y="815" width="370" height="35" as="geometry"/>
+        </mxCell>
+        <mxCell id="r4c4" value="Dihitung dari FAKTA NYATA di produksi, bisa diaudit manual" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#BBDEFB;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="860" y="815" width="540" height="35" as="geometry"/>
+        </mxCell>
+
+        <!-- Row 5: Memory -->
+        <mxCell id="r5c1" value="&lt;b&gt;Memory&lt;/b&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#CFD8DC;fontSize=10;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="60" y="850" width="130" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="r5c2" value="Replay Buffer di RAM (hilang saat restart)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#FFCDD2;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="190" y="850" width="300" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="r5c3" value="&lt;b&gt;Experience Memory di ChromaDB&lt;/b&gt; (persistent, auto-runbook)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#C8E6C9;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="490" y="850" width="370" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="r5c4" value="Tidak hilang saat restart, semantic search, auto-generate SOP baru" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#BBDEFB;fontSize=9;fontColor=#333;" vertex="1" parent="1">
+          <mxGeometry x="860" y="850" width="540" height="30" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

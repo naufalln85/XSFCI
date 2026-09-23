@@ -1,0 +1,74 @@
+# ============================================================
+# Fault Injection: CPU Stress
+# ============================================================
+# Membuat pod stress-test yang mengonsumsi CPU tinggi
+# di node yang sama dengan target service.
+#
+# Tujuan: Menghasilkan data anomali CPU spike di dataset
+# untuk melatih model Failure Prediction (Layer 3).
+#
+# Deploy:  kubectl apply -f cpu-stress.yaml
+# Hapus:   kubectl delete -f cpu-stress.yaml
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fault-cpu-stress
+  namespace: demo
+  labels:
+    app: fault-injection
+    fault-type: cpu-stress
+  annotations:
+    xfsci.io/fault-type: "cpu-stress"
+    xfsci.io/target: "node-level"
+    xfsci.io/severity: "high"
+    xfsci.io/duration: "120s"
+spec:
+  # Jalankan di node worker tertentu (Bandung / node yang akan diuji)
+  nodeSelector:
+    xfsci-site: bandung
+  containers:
+    - name: cpu-stress
+      image: alexeiled/stress-ng:latest
+      command:
+        - "stress-ng"
+        - "--cpu"           # Stres CPU
+        - "4"               # 4 CPU workers (sesuaikan dgn jumlah core node)
+        - "--cpu-load"
+        - "90"              # Target 90% CPU load
+        - "--timeout"
+        - "120s"            # Jalankan selama 2 menit
+        - "--metrics-brief"
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "64Mi"
+        limits:
+          cpu: "2000m"      # Izinkan pakai hingga 2 CPU core
+          memory: "128Mi"
+  restartPolicy: Never
+  # Auto-cleanup setelah selesai
+  activeDeadlineSeconds: 180
+
+---
+# ============================================================
+# Versi Chaos Mesh (alternatif jika Chaos Mesh terinstall)
+# ============================================================
+# apiVersion: chaos-mesh.org/v1alpha1
+# kind: StressChaos
+# metadata:
+#   name: cpu-stress-chaos
+#   namespace: demo
+# spec:
+#   mode: one
+#   selector:
+#     namespaces:
+#       - demo
+#     labelSelectors:
+#       app: frontend
+#   stressors:
+#     cpu:
+#       workers: 2
+#       load: 80
+#   duration: "120s"

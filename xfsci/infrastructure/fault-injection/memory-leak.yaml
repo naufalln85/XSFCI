@@ -1,0 +1,53 @@
+# ============================================================
+# Fault Injection: Memory Leak Simulation
+# ============================================================
+# Membuat pod yang secara bertahap mengonsumsi memori
+# untuk mensimulasikan memory leak (kebocoran memori).
+#
+# Tujuan: Menghasilkan data anomali RAM yang naik perlahan
+# agar LSTM/Transformer belajar memprediksi OOM Crash.
+#
+# Deploy:  kubectl apply -f memory-leak.yaml
+# Hapus:   kubectl delete -f memory-leak.yaml
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fault-memory-leak
+  namespace: demo
+  labels:
+    app: fault-injection
+    fault-type: memory-leak
+  annotations:
+    xfsci.io/fault-type: "memory-leak"
+    xfsci.io/target: "node-level"
+    xfsci.io/severity: "critical"
+    xfsci.io/duration: "300s"
+spec:
+  nodeSelector:
+    xfsci-site: bandung
+  containers:
+    - name: memory-leak
+      image: alexeiled/stress-ng:latest
+      command:
+        - "stress-ng"
+        - "--vm"              # Memory stressor
+        - "2"                 # 2 memory workers
+        - "--vm-bytes"
+        - "256M"              # Alokasikan 256MB per worker
+        - "--vm-hang"
+        - "0"                 # Jangan free memori (simulasi leak!)
+        - "--vm-keep"         # Keep memori teralokasi
+        - "--timeout"
+        - "300s"              # Jalankan selama 5 menit (leak bertahap)
+        - "--metrics-brief"
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "200m"
+          memory: "1Gi"       # Biarkan pakai hingga 1GB (akan OOM killed)
+  restartPolicy: Never
+  activeDeadlineSeconds: 360

@@ -1,0 +1,65 @@
+# ============================================================
+# Fault Injection: Network Latency & Packet Loss
+# ============================================================
+# Menggunakan tc (traffic control) untuk menambahkan delay
+# dan packet loss pada network interface kontainer.
+#
+# Tujuan: Menghasilkan data latency spike dan packet loss
+# yang memengaruhi inter-service communication.
+#
+# Deploy:  kubectl apply -f network-latency.yaml
+# Hapus:   kubectl delete -f network-latency.yaml
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fault-network-latency
+  namespace: demo
+  labels:
+    app: fault-injection
+    fault-type: network-latency
+  annotations:
+    xfsci.io/fault-type: "network-latency"
+    xfsci.io/target: "network-level"
+    xfsci.io/severity: "medium"
+    xfsci.io/duration: "180s"
+spec:
+  nodeSelector:
+    xfsci-site: surabaya
+  hostNetwork: true       # Akses network interface host
+  containers:
+    - name: network-fault
+      image: alpine:3.19
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "🌐 [FAULT INJECTION] Adding network latency & packet loss..."
+          
+          # Install iproute2 untuk tc command
+          apk add --no-cache iproute2
+          
+          # Dapatkan network interface utama
+          IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+          echo "Interface: $IFACE"
+          
+          # Tambahkan latency 200ms ± 50ms dan 5% packet loss
+          tc qdisc add dev $IFACE root netem \
+            delay 200ms 50ms distribution normal \
+            loss 5% \
+            duplicate 1%
+          
+          echo "✅ Network fault applied: 200ms delay, 5% packet loss"
+          echo "⏰ Running for 180 seconds..."
+          sleep 180
+          
+          # Cleanup: hapus rule tc
+          tc qdisc del dev $IFACE root 2>/dev/null
+          echo "🧹 Network fault cleaned up"
+      securityContext:
+        capabilities:
+          add: ["NET_ADMIN"]  # Diperlukan untuk tc command
+        privileged: true
+  restartPolicy: Never
+  activeDeadlineSeconds: 240

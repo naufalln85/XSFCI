@@ -1,0 +1,95 @@
+# ============================================================
+# Fault Injection: Pod Crash / CrashLoopBackOff
+# ============================================================
+# Menghapus pod secara paksa untuk mensimulasikan crash mendadak.
+# Kubernetes akan otomatis me-restart pod (CrashLoopBackOff).
+#
+# Tujuan: Menghasilkan data restart_count meningkat tajam
+# dan periode downtime singkat di dataset.
+#
+# Deploy:  kubectl apply -f pod-crash.yaml
+# ============================================================
+
+# Job yang secara periodik menghapus pod target
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fault-pod-crash
+  namespace: demo
+  labels:
+    app: fault-injection
+    fault-type: pod-crash
+  annotations:
+    xfsci.io/fault-type: "pod-crash"
+    xfsci.io/target: "pod-level"
+    xfsci.io/severity: "high"
+spec:
+  # Jalankan setiap 3 menit
+  schedule: "*/3 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: fault-injector
+          containers:
+            - name: pod-killer
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "🔥 [FAULT INJECTION] Killing random pod in namespace demo..."
+                  
+                  # Pilih pod secara acak dari deployment target
+                  TARGETS=("frontend" "cartservice" "recommendationservice" "paymentservice")
+                  TARGET=${TARGETS[$RANDOM % ${#TARGETS[@]}]}
+                  
+                  echo "Target: $TARGET"
+                  
+                  # Hapus pod secara paksa
+                  POD=$(kubectl get pods -n demo -l app=$TARGET -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+                  
+                  if [ -n "$POD" ]; then
+                    kubectl delete pod $POD -n demo --force --grace-period=0
+                    echo "✅ Pod $POD deleted (simulating crash)"
+                  else
+                    echo "⚠️ No pod found for $TARGET"
+                  fi
+          restartPolicy: OnFailure
+
+---
+# ServiceAccount & RBAC untuk fault injector
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fault-injector
+  namespace: demo
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fault-injector-role
+  namespace: demo
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fault-injector-binding
+  namespace: demo
+subjects:
+  - kind: ServiceAccount
+    name: fault-injector
+    namespace: demo
+roleRef:
+  kind: Role
+  name: fault-injector-role
+  apiGroup: rbac.authorization.k8s.io

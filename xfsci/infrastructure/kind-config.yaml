@@ -1,0 +1,101 @@
+# ============================================================
+# Kind Cluster Configuration - XFSCI Multi-Node
+# ============================================================
+# File ini membuat cluster Kubernetes lokal dengan:
+#   - 1 Control Plane node
+#   - 3 Worker nodes (simulasi 3 site/data center)
+#
+# Cara pakai:
+#   kind create cluster --name xfsci-cluster --config kind-config.yaml
+#
+# Cara hapus:
+#   kind delete cluster --name xfsci-cluster
+# ============================================================
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: xfsci-cluster
+
+networking:
+  # Pod subnet - range IP untuk Pod
+  podSubnet: "10.244.0.0/16"
+  # Service subnet - range IP untuk Service
+  serviceSubnet: "10.96.0.0/12"
+
+nodes:
+  # --- Control Plane Node ---
+  # Node ini menjalankan Kubernetes API server, etcd, scheduler, controller
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "xfsci-role=control-plane"
+    extraPortMappings:
+      # Prometheus UI
+      - containerPort: 30090
+        hostPort: 9090
+        protocol: TCP
+      # Grafana UI
+      - containerPort: 30030
+        hostPort: 3000
+        protocol: TCP
+      # Loki API
+      - containerPort: 30100
+        hostPort: 3100
+        protocol: TCP
+      # XFSCI Backend API (FastAPI)
+      - containerPort: 30800
+        hostPort: 8000
+        protocol: TCP
+      # XFSCI Dashboard (Next.js)
+      - containerPort: 30801
+        hostPort: 3001
+        protocol: TCP
+      # Flower FL Server
+      - containerPort: 30880
+        hostPort: 8080
+        protocol: TCP
+
+  # --- Worker Node A (Simulasi Cluster Jakarta) ---
+  # Workload normal, beban stabil
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "xfsci-role=worker,xfsci-site=jakarta,topology.kubernetes.io/zone=id-jakarta"
+    extraMounts:
+      - hostPath: /tmp/xfsci-worker-a
+        containerPath: /data
+        readOnly: false
+
+  # --- Worker Node B (Simulasi Cluster Bandung) ---
+  # Traffic spike, latency pressure, resource saturation
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "xfsci-role=worker,xfsci-site=bandung,topology.kubernetes.io/zone=id-bandung"
+    extraMounts:
+      - hostPath: /tmp/xfsci-worker-b
+        containerPath: /data
+        readOnly: false
+
+  # --- Worker Node C (Simulasi Cluster Surabaya) ---
+  # Fault injection target, simulasi Byzantine client
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "xfsci-role=worker,xfsci-site=surabaya,topology.kubernetes.io/zone=id-surabaya"
+    extraMounts:
+      - hostPath: /tmp/xfsci-worker-c
+        containerPath: /data
+        readOnly: false

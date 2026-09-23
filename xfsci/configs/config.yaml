@@ -1,0 +1,338 @@
+# ============================================================
+# XFSCI Global Configuration
+# ============================================================
+# Konfigurasi terpusat untuk seluruh komponen proyek XFSCI.
+# Semua module Python mengacu ke file ini.
+# ============================================================
+
+project:
+  name: "XFSCI"
+  version: "0.1.0"
+  description: "Explainable Federated Self-Healing Cloud Infrastructure"
+
+# --- Kubernetes Cluster ---
+cluster:
+  name: "xfsci-cluster"
+  provider: "kind"            # kind | k3d | k3s
+  nodes:
+    control_plane: 1
+    workers: 3                # 3 workers = simulasi 3 site/cluster
+  context: "kind-xfsci-cluster"
+
+# --- Namespaces ---
+namespaces:
+  monitoring: "monitoring"    # Prometheus, Grafana, Loki
+  workload: "demo"            # Sample microservices (Online Boutique)
+  xfsci: "xfsci-system"      # XFSCI backend & AI agents
+  chaos: "chaos-testing"      # Fault injection tools
+
+# --- Monitoring (Layer 1) ---
+monitoring:
+  prometheus:
+    url: "http://localhost:9090"
+    scrape_interval: "5s"       # Scrape setiap 5 detik
+    retention: "7d"             # Simpan data 7 hari
+    storage_size: "10Gi"
+  loki:
+    url: "http://localhost:3100"
+    retention: "72h"
+  grafana:
+    url: "http://localhost:3000"
+    admin_password: "xfsci-admin-2026"
+
+# --- Data Collection (Fase 2) ---
+data:
+  scrape_interval_seconds: 5    # Ambil metrik setiap 5 detik
+  collection_duration_minutes: 60  # Kumpulkan data selama 60 menit per sesi
+  output_dir: "data/raw"
+  processed_dir: "data/processed"
+  synthetic_dir: "data/synthetic"
+  target_namespace: "demo"
+  
+  # Feature columns yang dikumpulkan
+  metric_features:
+    - "cpu_usage"
+    - "memory_usage"
+    - "memory_usage_percent"
+    - "pod_restarts"
+    - "net_rx_bytes"
+    - "net_tx_bytes"
+    - "request_rate"
+    - "error_rate"
+    - "latency_p50"
+    - "latency_p95"
+    - "latency_p99"
+
+  # Label categories
+  labels:
+    - "NORMAL"
+    - "WARNING"
+    - "CRITICAL"
+
+# --- Preprocessing ---
+preprocessing:
+  sliding_window_size: 30       # 30 timesteps = 150 detik (2.5 menit)
+  train_split: 0.70
+  val_split: 0.15
+  test_split: 0.15
+  normalization: "minmax"       # minmax | standard | robust
+  augmentation_ratio: 0.5       # Target: 50% anomali setelah augmentasi
+
+# --- GNN Model (Layer 2: Cloud Intelligence) ---
+gnn:
+  hidden_channels: 64
+  num_layers: 2
+  dropout: 0.3
+  learning_rate: 0.001
+  epochs: 100
+  model_type: "GCN"             # GCN | GAT | GraphSAGE
+
+# --- Prediction Model (Layer 3: Failure Prediction) ---
+prediction:
+  # LSTM Baseline
+  lstm:
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.2
+    learning_rate: 0.001
+    epochs: 50
+    batch_size: 64
+
+  # Time-Series Transformer (Primary)
+  transformer:
+    d_model: 128               # Embedding dimension
+    nhead: 8                   # Attention heads
+    num_encoder_layers: 4      # Transformer encoder layers
+    dim_feedforward: 256       # FFN hidden size
+    dropout: 0.1
+    learning_rate: 0.0001
+    epochs: 100
+    batch_size: 32
+    max_seq_length: 30         # = sliding_window_size
+
+  # Output
+  num_classes: 3               # NORMAL, WARNING, CRITICAL
+  risk_score_output: true      # Also output continuous risk score [0, 1]
+
+# --- RL Agent (Layer 4: Decision Agent) ---
+rl_agent:
+  # Action Space
+  actions:
+    0: "no_op"                 # Do nothing
+    1: "restart_pod"           # kubectl rollout restart
+    2: "scale_out"             # Increase replicas (+2)
+    3: "rate_limit"            # Apply NetworkPolicy rate limit
+    4: "migrate_pod"           # Drain node & reschedule
+
+  # State Space dimensions
+  state_dim: 15                # metrics + risk_score + gnn_embedding
+
+  # DQN Baseline
+  dqn:
+    learning_rate: 0.0005
+    gamma: 0.99                # Discount factor
+    epsilon_start: 1.0
+    epsilon_end: 0.01
+    epsilon_decay: 0.995
+    buffer_size: 10000
+    batch_size: 64
+    target_update_freq: 10
+    episodes: 1000
+
+  # PPO Primary
+  ppo:
+    learning_rate: 0.0003
+    gamma: 0.99
+    gae_lambda: 0.95           # GAE lambda
+    clip_range: 0.2            # PPO clip
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    total_timesteps: 100000
+
+  # Reward Function weights (dipakai di simulator offline)
+  reward:
+    sla_maintained: 100.0
+    fast_recovery_bonus: 25.0
+    resource_waste_penalty: -50.0
+    downtime_penalty: -200.0
+    no_op_when_healthy: 5.0    # Small reward for correct no-op
+
+# --- AI Agent (Layer 4 Primary: Pengganti RL di Produksi) ---
+ai_agent:
+  # LLM Provider
+  llm:
+    provider: "gemini"           # gemini | openai | ollama
+    model: "gemini-2.0-flash"    # Model Gemini Flash (gratis, cepat)
+    api_key_env: "GEMINI_API_KEY"  # Nama env variable untuk API key
+    temperature: 0.1             # Rendah = konsisten & deterministik
+    max_tokens: 1024
+    timeout_seconds: 10          # Max wait time per request
+    retry_attempts: 3
+
+  # Action Space (sama dengan RL, tapi terkunci via Pydantic schema)
+  actions:
+    - "no_op"                    # Tidak ada tindakan
+    - "restart_pod"              # Restart pod bermasalah
+    - "scale_out"                # Tambah replika (+N)
+    - "scale_in"                 # Kurangi replika (-N)
+    - "rate_limit"               # Batasi trafik masuk
+    - "migrate_pod"              # Pindahkan pod ke node lain
+    - "escalate"                 # Eskalasi ke operator manusia
+
+  # Fallback jika LLM API tidak tersedia
+  fallback:
+    mode: "rule_based"           # rule_based | escalate_all
+    enabled: true
+
+# --- RAG Knowledge Base ---
+rag:
+  vector_store: "chromadb"       # chromadb | faiss
+  collection_name: "xfsci_runbooks"
+  embedding_model: "all-MiniLM-L6-v2"  # Sentence-transformers (22MB, ringan)
+  persist_directory: "knowledge_base/vectordb"
+  chunk_size: 500                # Karakter per chunk
+  chunk_overlap: 50
+  top_k_results: 3               # Ambil 3 dokumen paling relevan
+  runbook_directory: "knowledge_base/runbooks"
+
+# --- Deterministic Scoring Engine ---
+scoring:
+  # Urgency Score weights (pengganti RL reward, 100% transparan)
+  urgency:
+    ml_risk_score_weight: 40      # Max 40 poin dari ML prediction
+    ml_confidence_weight: 20      # Max 20 poin dari confidence
+    memory_leak_threshold_mb_min: 5   # > 5 MB/min = leak
+    memory_leak_score: 15
+    error_rate_threshold_pct: 5       # > 5% error = masalah
+    error_rate_score: 10
+    latency_p99_threshold_ms: 500     # > 500ms = lambat
+    latency_score: 10
+    restart_count_threshold: 3        # > 3 restart/jam = crash loop
+    restart_score: 5
+
+  # Urgency Level thresholds
+  levels:
+    low: 30                       # < 30 = LOW (no_op)
+    medium: 50                    # 30-50 = MEDIUM (monitor)
+    high: 70                      # 50-70 = HIGH (act)
+    critical: 85                  # > 85 = CRITICAL (immediate action)
+
+  # Post-Action Score weights
+  post_action:
+    error_rate_improved: 30       # Error rate turun
+    latency_improved: 30          # Latency membaik
+    memory_stabilized: 40         # Memory leak berhenti
+
+# --- Dry-Run Sandbox ---
+sandbox:
+  enabled: true
+  namespace: "xfsci-sandbox"      # K8s namespace khusus sandbox
+  test_duration_seconds: 60       # Berapa lama test aksi di sandbox
+  cleanup_after_test: true        # Auto-hapus resource sandbox
+  # Kapan sandbox digunakan (hanya untuk masalah baru)
+  trigger_conditions:
+    rag_similarity_below: 0.70    # Jika RAG confidence < 70%, pakai sandbox
+    novel_anomaly_type: true      # Jika anomaly type belum pernah ada
+
+# --- Precision Optimizer (ML Regression Auto-Tuning) ---
+precision_optimizer:
+  model_type: "gradient_boosting"  # gradient_boosting | random_forest | xgboost
+  model_path: "models/optimizer/replica_predictor.pkl"
+  # Auto-Tune Binary Search
+  auto_tune:
+    enabled: true
+    min_replicas: 1
+    max_replicas: 20
+    target_latency_ms: 200        # SLA target
+    stabilization_wait_seconds: 30
+  # Training data
+  training:
+    min_samples: 100              # Minimum data historis untuk training
+    retrain_interval_hours: 24    # Retrain model setiap 24 jam
+
+# --- Experience Memory (AI Agent Learning) ---
+experience_memory:
+  vector_store: "chromadb"
+  collection_name: "xfsci_experience"
+  persist_directory: "knowledge_base/experience_db"
+  max_entries: 10000              # Max pengalaman yang disimpan
+  auto_generate_runbook: true     # Auto-buat runbook dari pengalaman sukses
+  min_success_count: 3            # Min 3x sukses sebelum jadi runbook
+
+# --- Self-Healing Engine (Layer 5) ---
+healing:
+  # Safety Guardrails
+  guardrails:
+    confidence_threshold: 0.85  # Minimum AI confidence to execute
+    max_actions_per_pod: 2      # Max healing per pod within cooldown
+    cooldown_minutes: 15        # Cooldown period
+    circuit_breaker_failures: 3 # Auto-stop after N consecutive failures
+    post_healing_wait_seconds: 30  # Wait time for health check after action
+    rollback_latency_increase_pct: 20  # Rollback if latency increases >20%
+    rollback_error_rate_increase_pct: 10  # Rollback if error rate increases >10%
+
+  # Kubernetes executor settings
+  k8s:
+    scale_out_replicas: 2       # Default: add 2 replicas on scale-out
+    max_replicas: 10            # Max replicas per deployment
+    drain_timeout_seconds: 60
+
+# --- Explainability (Layer 6: XAI) ---
+explainability:
+  method: "shap"               # shap | lime | both
+  shap:
+    n_samples: 100             # Background samples for KernelExplainer
+    max_display_features: 10   # Top N features to show
+  lime:
+    num_features: 10
+    num_samples: 5000
+
+# --- Federated Learning (Layer 7) ---
+federated:
+  framework: "flower"          # flower | pysyft
+  server:
+    address: "0.0.0.0:8080"
+    num_rounds: 20             # Total federated rounds
+    min_clients: 2             # Minimum clients to start round
+    fraction_fit: 1.0          # Fraction of clients for training
+    fraction_evaluate: 1.0     # Fraction of clients for evaluation
+
+  # Aggregation strategy
+  strategy: "fedmedian"        # fedavg | fedmedian | krum | multi_krum
+
+  # Client settings (per cluster)
+  client:
+    local_epochs: 5            # Epochs per federated round
+    local_batch_size: 32
+
+# --- Security Layer (Layer 8: Byzantine Defense) ---
+security:
+  byzantine_defense: true
+  defense_algorithm: "fedmedian"  # fedmedian | krum | multi_krum
+  krum:
+    num_closest: 2             # Select update closest to N others
+  detection:
+    z_score_threshold: 2.0     # Flag updates > 2σ from mean
+    log_rejected_clients: true
+
+# --- Backend API ---
+backend:
+  host: "0.0.0.0"
+  port: 8000
+  database:
+    type: "postgresql"         # postgresql | timescaledb
+    host: "localhost"
+    port: 5432
+    name: "xfsci_db"
+    user: "xfsci"
+    password: "xfsci_password_2026"
+  websocket:
+    enabled: true
+    push_interval_seconds: 5
+
+# --- Dashboard ---
+dashboard:
+  port: 3001
+  api_url: "http://localhost:8000"
+  ws_url: "ws://localhost:8000/ws"

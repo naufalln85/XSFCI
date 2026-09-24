@@ -30,8 +30,7 @@ spec:
   containers:
     - name: memory-leak
       image: alexeiled/stress-ng:latest
-      command:
-        - "stress-ng"
+      args:
         - "--vm"              # Memory stressor
         - "2"                 # 2 memory workers
         - "--vm-bytes"

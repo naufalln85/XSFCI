@@ -31,8 +31,7 @@ spec:
   containers:
     - name: cpu-stress
       image: alexeiled/stress-ng:latest
-      command:
-        - "stress-ng"
+      args:
         - "--cpu"           # Stres CPU
         - "4"               # 4 CPU workers (sesuaikan dgn jumlah core node)
         - "--cpu-load"

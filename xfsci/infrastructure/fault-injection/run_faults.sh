@@ -79,7 +79,7 @@ sleep 600  # 10 menit
 
 # ===== FASE 2: CPU STRESS =====
 log_fault "Deploying CPU Stress fault..."
-echo "  → Target: Worker Node Bandung"
+echo "  → Target: Worker 2"
 echo "  → Duration: 120 seconds"
 echo "  → Data label: CRITICAL (cpu-stress)"
 kubectl apply -f "$FAULT_DIR/cpu-stress.yaml"
@@ -92,7 +92,7 @@ sleep 300  # 5 menit recovery
 
 # ===== FASE 3: MEMORY LEAK =====
 log_fault "Deploying Memory Leak fault..."
-echo "  → Target: Worker Node Bandung"
+echo "  → Target: Worker 2"
 echo "  → Duration: 300 seconds (gradual increase)"
 echo "  → Data label: WARNING -> CRITICAL (memory-leak)"
 kubectl apply -f "$FAULT_DIR/memory-leak.yaml"
@@ -119,7 +119,7 @@ sleep 300  # 5 menit recovery
 
 # ===== FASE 5: NETWORK LATENCY =====
 log_fault "Deploying Network Latency fault..."
-echo "  → Target: Worker Node Surabaya"
+echo "  → Target: Worker 3"
 echo "  → Latency: 200ms ± 50ms, 5% packet loss"
 echo "  → Duration: 180 seconds"
 echo "  → Data label: WARNING (network-latency)"

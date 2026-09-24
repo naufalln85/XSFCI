@@ -168,7 +168,7 @@ ai_agent:
     temperature: 0.1             # Rendah = konsisten & deterministik
     max_tokens: 1024
     timeout_seconds: 10          # Max wait time per request
-    retry_attempts: 3
+    retry_attempts: 2
 
   # Action Space (sama dengan RL, tapi terkunci via Pydantic schema)
   actions:

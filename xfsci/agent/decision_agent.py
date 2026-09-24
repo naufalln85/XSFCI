@@ -16,6 +16,7 @@
 
 import os
 import json
+import time
 from typing import Optional
 from datetime import datetime
 
@@ -277,9 +278,15 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
                 
             except json.JSONDecodeError as e:
                 logger.warning(f"Attempt {attempt + 1}: Invalid JSON from Gemini: {e}")
+                if attempt < retry_attempts - 1:
+                    time.sleep(2 ** (attempt + 1))  # Exponential backoff: 2s, 4s, 8s
                 continue
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1}: Gemini error: {e}")
+                if attempt < retry_attempts - 1:
+                    backoff = 2 ** (attempt + 1)
+                    logger.info(f"Retrying in {backoff}s (backoff)...")
+                    time.sleep(backoff)  # Exponential backoff: 2s, 4s, 8s
                 continue
         
         # Semua retry gagal → fallback

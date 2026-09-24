@@ -173,7 +173,7 @@ ai_agent:
   # Ollama Local Fallback (jika Gemini gagal/timeout)
   ollama:
     enabled: true
-    base_url: "http://localhost:11434"  # Ollama default endpoint
+    base_url: "http://172.20.0.108:11434"  # Ollama di Master Node
     model: "qwen2.5:1.5b"              # Model ringan (~1.5GB RAM)
     timeout_seconds: 60                 # Lokal, boleh lebih lama
     temperature: 0.1

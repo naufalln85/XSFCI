@@ -45,94 +45,119 @@ if ! kubectl get nodes > /dev/null 2>&1; then
     exit 1
 fi
 echo -e "  ✅ Cluster OK"
+
+# Detect Master Node IP
+MASTER_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "172.20.0.108")
+echo -e "  📍 Detected Cluster IP: ${GREEN}${MASTER_IP}${NC}"
 echo ""
+
+# Mode detection
+MODE="${1:-all}"
+if [ "$MODE" == "--help" ] || [ "$MODE" == "-h" ]; then
+    echo "Usage: ./scripts/deploy_monitoring.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  (none)            Run full deployment pipeline with smart auto-detection"
+    echo "  --loki-boutique   Deploy only Loki (Log collector) and Online Boutique workload"
+    echo "  --verify          Verify current cluster workloads and access points"
+    echo "  --force           Force reinstall all Helm charts even if already running"
+    exit 0
+fi
 
 # ===== Step 1: Add Helm repos =====
-echo -e "${BLUE}[Step 1/5]${NC} Adding Helm repositories..."
-
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
-helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
-helm repo update
-
-echo -e "  ✅ Helm repos updated"
-echo ""
+if [ "$MODE" != "--verify" ]; then
+    echo -e "${BLUE}[Step 1/5]${NC} Adding & updating Helm repositories..."
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+    helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+    helm repo update
+    echo -e "  ✅ Helm repos updated"
+    echo ""
+fi
 
 # ===== Step 2: Deploy Prometheus + Grafana =====
-echo -e "${BLUE}[Step 2/5]${NC} Deploying Prometheus + Grafana..."
-echo -e "  This may take 2-3 minutes..."
+if [ "$MODE" != "--loki-boutique" ] && [ "$MODE" != "--verify" ]; then
+    echo -e "${BLUE}[Step 2/5]${NC} Deploying Prometheus + Grafana..."
+    
+    GRAFANA_READY=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana --no-headers 2>/dev/null | grep -c "3/3" || true)
+    PROM_READY=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus --no-headers 2>/dev/null | grep -c "Running" || true)
 
-helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-    --namespace monitoring \
-    --create-namespace \
-    -f "$HELM_VALUES_DIR/prometheus-values.yaml" \
-    --wait \
-    --timeout 300s
-
-echo ""
-echo -e "  ✅ Prometheus + Grafana deployed"
-echo -e "  📊 Prometheus UI: ${GREEN}http://localhost:9090${NC}"
-echo -e "  📈 Grafana UI:    ${GREEN}http://localhost:3000${NC}"
-echo -e "     Username: admin"
-echo -e "     Password: xfsci-admin-2026"
-echo ""
+    if [ "$GRAFANA_READY" -gt 0 ] && [ "$PROM_READY" -gt 0 ] && [ "$MODE" != "--force" ]; then
+        echo -e "  ✅ Prometheus & Grafana are already running and healthy! (Skipping to save time. Use --force to reinstall)"
+    else
+        echo -e "  Installing/upgrading kube-prometheus-stack..."
+        helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            -f "$HELM_VALUES_DIR/prometheus-values.yaml" \
+            --timeout 600s
+        echo -e "  ✅ Prometheus + Grafana deployed"
+    fi
+    echo -e "  📊 Prometheus UI: ${GREEN}http://${MASTER_IP}:30090${NC} (or http://localhost:30090)"
+    echo -e "  📈 Grafana UI:    ${GREEN}http://${MASTER_IP}:30030${NC} (or http://localhost:30030)"
+    echo -e "     Username: admin"
+    echo -e "     Password: xfsci-admin-2026"
+    echo ""
+fi
 
 # ===== Step 3: Deploy Loki + Promtail =====
-echo -e "${BLUE}[Step 3/5]${NC} Deploying Loki + Promtail..."
-
-helm upgrade --install loki grafana/loki-stack \
-    --namespace monitoring \
-    -f "$HELM_VALUES_DIR/loki-values.yaml" \
-    --wait \
-    --timeout 180s
-
-echo ""
-echo -e "  ✅ Loki + Promtail deployed"
-echo -e "  📝 Loki API: ${GREEN}http://localhost:3100${NC}"
-echo ""
+if [ "$MODE" != "--verify" ]; then
+    echo -e "${BLUE}[Step 3/5]${NC} Deploying Loki + Promtail (Log Collector)..."
+    
+    LOKI_READY=$(kubectl get pods -n monitoring -l app=loki --no-headers 2>/dev/null | grep -c "Running" || true)
+    if [ "$LOKI_READY" -gt 0 ] && [ "$MODE" != "--force" ]; then
+        echo -e "  ✅ Loki is already running! (Skipping to save time. Use --force to reinstall)"
+    else
+        helm upgrade --install loki grafana/loki-stack \
+            --namespace monitoring \
+            -f "$HELM_VALUES_DIR/loki-values.yaml" \
+            --timeout 600s
+        echo -e "  ✅ Loki + Promtail deployed"
+    fi
+    echo -e "  📝 Loki API: ${GREEN}http://${MASTER_IP}:30100${NC} (or http://localhost:30100)"
+    echo ""
+fi
 
 # ===== Step 4: Deploy Sample Workload =====
-echo -e "${BLUE}[Step 4/5]${NC} Deploying Online Boutique (sample microservices)..."
+if [ "$MODE" != "--verify" ]; then
+    echo -e "${BLUE}[Step 4/5]${NC} Deploying Online Boutique (sample microservices)..."
+    kubectl apply -f "$WORKLOAD_DIR/online-boutique.yaml"
 
-kubectl apply -f "$WORKLOAD_DIR/online-boutique.yaml"
+    echo -e "  Waiting for microservices to be ready (pulling images)..."
+    DEPLOYMENTS=(
+        "frontend"
+        "cartservice"
+        "redis-cart"
+        "productcatalogservice"
+        "currencyservice"
+        "paymentservice"
+        "shippingservice"
+        "emailservice"
+        "checkoutservice"
+        "recommendationservice"
+        "adservice"
+    )
 
-echo -e "  Waiting for all pods to be ready..."
-echo -e "  (This may take 3-5 minutes for image pulls)"
+    for dep in "${DEPLOYMENTS[@]}"; do
+        echo -ne "  Waiting for $dep... "
+        kubectl rollout status deployment/$dep -n demo --timeout=120s 2>/dev/null && echo "✅" || echo "⚠️ (pulling or starting)"
+    done
 
-# Tunggu deployment ready
-DEPLOYMENTS=(
-    "frontend"
-    "cartservice"
-    "redis-cart"
-    "productcatalogservice"
-    "currencyservice"
-    "paymentservice"
-    "shippingservice"
-    "emailservice"
-    "checkoutservice"
-    "recommendationservice"
-    "adservice"
-)
-
-for dep in "${DEPLOYMENTS[@]}"; do
-    echo -ne "  Waiting for $dep... "
-    kubectl rollout status deployment/$dep -n demo --timeout=180s 2>/dev/null && echo "✅" || echo "⚠️ (may still be pulling image)"
-done
-
-echo ""
-echo -e "  ✅ Online Boutique deployed (11 microservices)"
-echo -e "  🌐 Frontend: ${GREEN}http://localhost:30080${NC}"
-echo ""
+    echo ""
+    echo -e "  ✅ Online Boutique deployed (11 microservices)"
+    echo -e "  🌐 Frontend: ${GREEN}http://${MASTER_IP}:30080${NC} (or http://localhost:30080)"
+    echo ""
+fi
 
 # ===== Step 5: Verification =====
 echo -e "${BLUE}[Step 5/5]${NC} Final verification..."
 
 echo ""
 echo "  📦 Monitoring namespace pods:"
-kubectl get pods -n monitoring --no-headers | awk '{printf "    %-50s %s\n", $1, $3}'
+kubectl get pods -n monitoring --no-headers 2>/dev/null | awk '{printf "    %-52s %s\n", $1, $3}' || true
 echo ""
 
 echo "  🛒 Demo namespace pods:"
-kubectl get pods -n demo --no-headers | awk '{printf "    %-50s %s\n", $1, $3}'
+kubectl get pods -n demo --no-headers 2>/dev/null | awk '{printf "    %-52s %s\n", $1, $3}' || true
 echo ""
 
 # Count pods
@@ -140,29 +165,27 @@ MON_READY=$(kubectl get pods -n monitoring --no-headers 2>/dev/null | grep -c "R
 DEMO_READY=$(kubectl get pods -n demo --no-headers 2>/dev/null | grep -c "Running" || echo "0")
 
 echo -e "${GREEN}"
-echo "╔════════════════════════════════════════════════╗"
-echo "║  ✅ MONITORING STACK DEPLOYMENT COMPLETE!       ║"
-echo "╠════════════════════════════════════════════════╣"
-echo "║                                                ║"
-echo "║  Monitoring pods running: $MON_READY              ║"
-echo "║  Workload pods running:   $DEMO_READY              ║"
-echo "║                                                ║"
-echo "║  Access Points:                                ║"
-echo "║  ┌─────────────────────────────────────────┐   ║"
-echo "║  │ Prometheus  → http://localhost:9090     │   ║"
-echo "║  │ Grafana     → http://localhost:3000     │   ║"
-echo "║  │ Loki        → http://localhost:3100     │   ║"
-echo "║  │ Frontend    → http://localhost:30080    │   ║"
-echo "║  └─────────────────────────────────────────┘   ║"
-echo "║                                                ║"
-echo "║  Next steps:                                   ║"
-echo "║  1. Activate Python venv:                      ║"
-echo "║     source venv/bin/activate                   ║"
-echo "║  2. Start data collection:                     ║"
-echo "║     python data/collectors/metrics_scraper.py  ║"
-echo "║  3. Run fault injection:                       ║"
-echo "║     ./infrastructure/fault-injection/          ║"
-echo "║     run_faults.sh                              ║"
-echo "║                                                ║"
-echo "╚════════════════════════════════════════════════╝"
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║          ✅ XFSCI MONITORING & WORKLOAD READY!               ║"
+echo "╠══════════════════════════════════════════════════════════════╣"
+echo "║                                                              ║"
+echo "║  Monitoring pods running: $MON_READY                            ║"
+echo "║  Workload pods running:   $DEMO_READY                            ║"
+echo "║                                                              ║"
+echo "║  Access Points (Browser):                                    ║"
+echo "║  ┌────────────────────────────────────────────────────────┐  ║"
+echo "║  │ Prometheus  → http://${MASTER_IP}:30090                │  ║"
+echo "║  │ Grafana     → http://${MASTER_IP}:30030                │  ║"
+echo "║  │ Loki        → http://${MASTER_IP}:30100                │  ║"
+echo "║  │ Frontend    → http://${MASTER_IP}:30080                │  ║"
+echo "║  └────────────────────────────────────────────────────────┘  ║"
+echo "║  (Credentials: admin / xfsci-admin-2026)                     ║"
+echo "║                                                              ║"
+echo "║  Next steps:                                                 ║"
+echo "║  1. Test Python scrapers:                                    ║"
+echo "║     python3 data/collectors/metrics_scraper.py               ║"
+echo "║  2. Run fault injection:                                     ║"
+echo "║     ./infrastructure/fault-injection/run_faults.sh           ║"
+echo "║                                                              ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"

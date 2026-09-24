@@ -81,11 +81,21 @@ grafana:
   # Grafana resource limits
   resources:
     requests:
-      cpu: "200m"
-      memory: "256Mi"
-    limits:
       cpu: "500m"
       memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "1Gi"
+
+  # Toleransi waktu migrasi database awal agar tidak di-kill oleh Kubernetes
+  livenessProbe:
+    initialDelaySeconds: 300
+    failureThreshold: 30
+    timeoutSeconds: 30
+  readinessProbe:
+    initialDelaySeconds: 30
+    failureThreshold: 30
+    timeoutSeconds: 30
 
 # --- kube-state-metrics ---
 # Mengumpulkan status Kubernetes objects (pods, deployments, nodes)

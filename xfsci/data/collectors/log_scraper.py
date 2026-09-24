@@ -54,19 +54,19 @@ OUTPUT_DIR = Path(__file__).parent.parent / "raw"
 
 LOG_QUERIES = {
     # Semua error logs dari namespace demo
-    "error_logs": f'{{namespace="{TARGET_NAMESPACE}"}} |= "error" or "Error" or "ERROR"',
+    "error_logs": f'{{namespace="{TARGET_NAMESPACE}"}} |~ "(?i)error"',
     
     # OOMKilled events
-    "oom_events": f'{{namespace="{TARGET_NAMESPACE}"}} |= "OOMKilled" or "oom" or "OutOfMemory"',
+    "oom_events": f'{{namespace="{TARGET_NAMESPACE}"}} |~ "(?i)(oomkilled|oom|outofmemory)"',
     
     # CrashLoopBackOff
-    "crash_events": f'{{namespace="{TARGET_NAMESPACE}"}} |= "CrashLoopBackOff" or "crash" or "BackOff"',
+    "crash_events": f'{{namespace="{TARGET_NAMESPACE}"}} |~ "(?i)(crashloopbackoff|crash|backoff)"',
     
     # Connection refused / timeout
-    "connection_errors": f'{{namespace="{TARGET_NAMESPACE}"}} |= "connection refused" or "timeout" or "deadline exceeded"',
+    "connection_errors": f'{{namespace="{TARGET_NAMESPACE}"}} |~ "(?i)(connection refused|timeout|deadline exceeded)"',
     
     # Exception / panic
-    "exception_events": f'{{namespace="{TARGET_NAMESPACE}"}} |= "exception" or "panic" or "fatal"',
+    "exception_events": f'{{namespace="{TARGET_NAMESPACE}"}} |~ "(?i)(exception|panic|fatal)"',
 }
 
 
@@ -244,7 +244,8 @@ class XFSCILogScraper:
         while self._running:
             step += 1
             
-            new_entries = self.collect_one_step(lookback_seconds=interval_seconds + 5)
+            lookback = 600 if test_mode else (interval_seconds + 5)
+            new_entries = self.collect_one_step(lookback_seconds=lookback)
             
             if new_entries:
                 self.collected_rows.extend(new_entries)

@@ -1,0 +1,57 @@
+# ============================================================
+# Fault Injection: Network Latency - TURBO VARIANT
+# ============================================================
+# Variasi berat: 500ms latency, 15% packet loss, target Jakarta
+# Durasi: 45 detik
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fault-network-latency-turbo
+  namespace: demo
+  labels:
+    app: fault-injection
+    fault-type: network-latency
+    session: turbo
+  annotations:
+    xfsci.io/fault-type: "network-latency"
+    xfsci.io/target: "network-level"
+    xfsci.io/severity: "high"
+    xfsci.io/duration: "45s"
+spec:
+  nodeSelector:
+    xfsci-site: jakarta        # Target berbeda dari sesi 1 (surabaya)
+  hostNetwork: true
+  containers:
+    - name: network-fault
+      image: alpine:3.19
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[FAULT INJECTION] Adding HEAVY network latency & packet loss..."
+          
+          apk add --no-cache iproute2
+          
+          IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+          echo "Interface: $IFACE"
+          
+          # 500ms latency (sesi 1: 200ms), 15% packet loss (sesi 1: 5%)
+          tc qdisc add dev $IFACE root netem \
+            delay 500ms 100ms distribution normal \
+            loss 15% \
+            duplicate 3%
+          
+          echo "Network fault applied: 500ms delay, 15% packet loss"
+          echo "Running for 45 seconds..."
+          sleep 45
+          
+          tc qdisc del dev $IFACE root 2>/dev/null
+          echo "Network fault cleaned up"
+      securityContext:
+        capabilities:
+          add: ["NET_ADMIN"]
+        privileged: true
+  restartPolicy: Never
+  activeDeadlineSeconds: 90

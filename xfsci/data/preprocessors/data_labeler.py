@@ -1,19 +1,28 @@
 """
 ============================================================
-XFSCI Data Labeler - Fase 3A: Preprocessing
+XFSCI Data Labeler - Fase 3A: Preprocessing (Multi-Session)
 ============================================================
 Memberikan label ground truth pada dataset mentah berdasarkan
-rentang waktu skenario fault injection dari run_faults.sh.
+rentang waktu skenario fault injection.
+
+Mendukung 2 profil sesi:
+  --session standard  : Timing dari run_faults.sh (~55 menit)
+  --session turbo     : Timing dari run_faults_turbo.sh (~15 menit)
+
+Mode multi-sesi:
+  --merge-all         : Label semua CSV di data/raw/ dan gabungkan
 
 Skema Label:
   - NORMAL               : Kondisi stabil (baseline & recovery)
-  - FAULT_CPU_STRESS     : Beban CPU tinggi (Worker 2)
-  - FAULT_MEMORY_LEAK    : Kebocoran memori (Worker 2)
+  - FAULT_CPU_STRESS     : Beban CPU tinggi
+  - FAULT_MEMORY_LEAK    : Kebocoran memori
   - FAULT_POD_CRASH      : Kematian mendadak pod acak
-  - FAULT_NETWORK_LATENCY: Latensi jaringan tinggi (Worker 3)
+  - FAULT_NETWORK_LATENCY: Latensi jaringan tinggi
 
 Cara pakai:
   python data/preprocessors/data_labeler.py
+  python data/preprocessors/data_labeler.py --session turbo
+  python data/preprocessors/data_labeler.py --merge-all
   python data/preprocessors/data_labeler.py --interactive
 ============================================================
 """
@@ -40,6 +49,7 @@ LABEL_POD_CRASH       = "FAULT_POD_CRASH"
 LABEL_NET_LATENCY     = "FAULT_NETWORK_LATENCY"
 
 # Pods per node (berdasarkan nodeSelector di deployment)
+WORKER1_PODS = ["frontend", "loadgenerator", "recommendationservice", "paymentservice"]
 WORKER2_PODS = ["adservice", "cartservice", "productcatalogservice", "redis-cart"]
 WORKER3_PODS = ["checkoutservice", "currencyservice", "emailservice", "shippingservice"]
 
@@ -126,24 +136,38 @@ class XFSCIDataLabeler:
         return df, out
 
 
-def auto_detect_windows(csv_path: Path) -> dict:
+def auto_detect_windows(csv_path: Path, session: str = "standard") -> dict:
+    """Deteksi otomatis fault windows berdasarkan profil sesi."""
     df = pd.read_csv(csv_path, nrows=1)
     start = pd.to_datetime(df["timestamp"].iloc[0])
     logger.info(f"Scraper start time: {start}")
+    logger.info(f"Session profile: {session}")
 
     def T(minutes):
         return start + timedelta(minutes=minutes)
 
-    windows = {
-        "cpu_stress":  {"start": T(10.0), "end": T(12.5)},
-        "memory_leak": {"start": T(17.0), "end": T(22.5)},
-        "pod_crash":   {"start": T(27.0), "end": T(42.0)},
-        "net_latency": {"start": T(47.0), "end": T(50.5)},
-    }
+    if session == "turbo":
+        # Timing dari run_faults_turbo.sh (~15 menit)
+        # Baseline 3min, fault 1min, recovery 1min, ...
+        windows = {
+            "cpu_stress":  {"start": T(3.0),  "end": T(4.0),  "target_pods": WORKER1_PODS},
+            "memory_leak": {"start": T(5.0),  "end": T(6.0),  "target_pods": WORKER3_PODS},
+            "pod_crash":   {"start": T(7.0),  "end": T(12.0), "target_pods": None},
+            "net_latency": {"start": T(13.0), "end": T(14.0), "target_pods": WORKER1_PODS},
+        }
+    else:
+        # Timing dari run_faults.sh (~55 menit)
+        windows = {
+            "cpu_stress":  {"start": T(10.0), "end": T(12.5), "target_pods": WORKER2_PODS},
+            "memory_leak": {"start": T(17.0), "end": T(22.5), "target_pods": WORKER2_PODS},
+            "pod_crash":   {"start": T(27.0), "end": T(42.0), "target_pods": None},
+            "net_latency": {"start": T(47.0), "end": T(50.5), "target_pods": WORKER3_PODS},
+        }
 
-    logger.info("Estimated fault windows (UTC):")
+    logger.info(f"Estimated fault windows (UTC) [{session}]:")
     for name, w in windows.items():
-        logger.info(f"  {name:<15}: {w['start'].strftime('%H:%M:%S')} -> {w['end'].strftime('%H:%M:%S')}")
+        pods_info = f" -> pods: {w.get('target_pods', 'all')}" if w.get('target_pods') else " -> pods: ALL"
+        logger.info(f"  {name:<15}: {w['start'].strftime('%H:%M:%S')} -> {w['end'].strftime('%H:%M:%S')}{pods_info}")
 
     return windows
 
@@ -182,17 +206,73 @@ def interactive_input() -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="XFSCI Data Labeler - Fase 3A")
+    parser = argparse.ArgumentParser(description="XFSCI Data Labeler - Fase 3A (Multi-Session)")
     parser.add_argument("--input",       type=str, default=None, help="Path CSV input")
     parser.add_argument("--output",      type=str, default=None, help="Path CSV output")
     parser.add_argument("--interactive", action="store_true",    help="Input waktu fault manual")
+    parser.add_argument("--session",     type=str, default="standard",
+                        choices=["standard", "turbo"],
+                        help="Profil sesi: standard (55min) atau turbo (15min)")
+    parser.add_argument("--merge-all",   action="store_true",
+                        help="Label SEMUA CSV di data/raw/ dan gabungkan jadi satu file")
     args = parser.parse_args()
 
     logger.info("=" * 55)
-    logger.info("  XFSCI Data Labeler - Fase 3A")
+    logger.info("  XFSCI Data Labeler - Fase 3A (Multi-Session)")
+    logger.info(f"  Session: {args.session}")
     logger.info("=" * 55)
 
-    # Pilih file input
+    if args.merge_all:
+        # ===== MODE MERGE-ALL: Label semua CSV dan gabungkan =====
+        all_files = sorted(RAW_DIR.glob("metrics_*.csv"), key=lambda p: p.stat().st_mtime)
+        if not all_files:
+            logger.error(f"Tidak ada metrics_*.csv di {RAW_DIR}")
+            sys.exit(1)
+
+        logger.info(f"Found {len(all_files)} CSV file(s) to process:")
+        all_labeled = []
+
+        for i, csv_path in enumerate(all_files):
+            logger.info(f"\n--- Processing file {i+1}/{len(all_files)}: {csv_path.name} ---")
+
+            # Deteksi sesi: file pertama = standard, berikutnya = turbo
+            session_type = "standard" if i == 0 else "turbo"
+            logger.info(f"  Auto-detected session: {session_type}")
+
+            fault_windows = auto_detect_windows(csv_path, session=session_type)
+            labeler = XFSCIDataLabeler(fault_windows)
+            df = labeler.load_raw_csv(csv_path)
+            logger.info("  Applying labels...")
+            df = labeler.apply_labels(df)
+            df["source_file"] = csv_path.name
+            df["session"] = session_type
+            labeler.print_distribution(df)
+            all_labeled.append(df)
+
+        # Gabungkan semua
+        merged = pd.concat(all_labeled, ignore_index=True)
+        merged = merged.sort_values(["timestamp", "pod_name"]).reset_index(drop=True)
+
+        logger.info(f"\n{'='*55}")
+        logger.info(f"  MERGED Dataset: {len(merged):,} total rows from {len(all_files)} sessions")
+
+        # Print merged distribution
+        dist = merged["label"].value_counts()
+        total = len(merged)
+        for label, count in dist.items():
+            pct = count / total * 100
+            bar = "=" * int(pct / 2)
+            logger.info(f"  {label:<30} {count:>5} ({pct:5.1f}%) {bar}")
+        logger.info(f"{'='*55}")
+
+        ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = PROCESSED_DIR / f"labeled_merged_{ts_str}.csv"
+        merged.to_csv(out_path, index=False)
+        logger.success(f"Merged labeled file saved: {out_path}")
+        logger.info("Next: python data/preprocessors/data_cleaner.py")
+        return
+
+    # ===== MODE SINGLE FILE =====
     if args.input:
         csv_path = Path(args.input)
     else:
@@ -207,7 +287,7 @@ def main():
     if args.interactive:
         fault_windows = interactive_input()
     else:
-        fault_windows = auto_detect_windows(csv_path)
+        fault_windows = auto_detect_windows(csv_path, session=args.session)
 
     # Simpan fault_windows.json
     windows_json = PROCESSED_DIR / "fault_windows.json"
@@ -226,3 +306,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

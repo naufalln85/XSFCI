@@ -1,0 +1,44 @@
+# ============================================================
+# Fault Injection: CPU Stress - TURBO VARIANT
+# ============================================================
+# Variasi ringan: 40% CPU load, 2 worker, target Jakarta
+# Durasi: 45 detik (dipercepat untuk sesi turbo)
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fault-cpu-stress-turbo
+  namespace: demo
+  labels:
+    app: fault-injection
+    fault-type: cpu-stress
+    session: turbo
+  annotations:
+    xfsci.io/fault-type: "cpu-stress"
+    xfsci.io/target: "node-level"
+    xfsci.io/severity: "medium"
+    xfsci.io/duration: "45s"
+spec:
+  nodeSelector:
+    xfsci-site: jakarta        # Target berbeda dari sesi 1 (bandung)
+  containers:
+    - name: cpu-stress
+      image: alexeiled/stress-ng:latest
+      args:
+        - "--cpu"
+        - "2"                  # 2 worker (sesi 1: 4 worker)
+        - "--cpu-load"
+        - "40"                 # 40% load (sesi 1: 90%)
+        - "--timeout"
+        - "45s"                # 45 detik (sesi 1: 120s)
+        - "--metrics-brief"
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "64Mi"
+        limits:
+          cpu: "1000m"
+          memory: "128Mi"
+  restartPolicy: Never
+  activeDeadlineSeconds: 90

@@ -1,0 +1,47 @@
+# ============================================================
+# Fault Injection: Memory Leak - TURBO VARIANT
+# ============================================================
+# Variasi berat: 512MB x 2 worker, target Surabaya
+# Durasi: 45 detik (leak cepat - simulasi OOM mendadak)
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fault-memory-leak-turbo
+  namespace: demo
+  labels:
+    app: fault-injection
+    fault-type: memory-leak
+    session: turbo
+  annotations:
+    xfsci.io/fault-type: "memory-leak"
+    xfsci.io/target: "node-level"
+    xfsci.io/severity: "critical"
+    xfsci.io/duration: "45s"
+spec:
+  nodeSelector:
+    xfsci-site: surabaya       # Target berbeda dari sesi 1 (bandung)
+  containers:
+    - name: memory-leak
+      image: alexeiled/stress-ng:latest
+      args:
+        - "--vm"
+        - "2"
+        - "--vm-bytes"
+        - "512M"               # 512MB (sesi 1: 256MB) - leak lebih agresif
+        - "--vm-hang"
+        - "0"
+        - "--vm-keep"
+        - "--timeout"
+        - "45s"                # 45 detik (sesi 1: 300s) - OOM cepat
+        - "--metrics-brief"
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "200m"
+          memory: "1536Mi"     # 1.5GB limit (lebih tinggi untuk leak berat)
+  restartPolicy: Never
+  activeDeadlineSeconds: 90

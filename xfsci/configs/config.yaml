@@ -163,7 +163,7 @@ ai_agent:
   # LLM Provider
   llm:
     provider: "gemini"           # gemini | openai | ollama
-    model: "gemini-2.0-flash"    # Model Gemini Flash (gratis, cepat)
+    model: "gemini-3.6-flash"    # Model Gemini Flash (gratis, cepat)
     api_key_env: "GEMINI_API_KEY"  # Nama env variable untuk API key
     temperature: 0.1             # Rendah = konsisten & deterministik
     max_tokens: 1024

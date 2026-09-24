@@ -29,6 +29,7 @@
 # 10. Eksekusi + Evaluasi + Simpan ke Experience Memory
 # ============================================================
 
+import sys
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -36,6 +37,9 @@ from typing import Optional
 import yaml
 from pathlib import Path
 from loguru import logger
+
+# Pastikan root direktori proyek ada di sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.action_schema import (
     ActionDecision, ActionType, SituationReport,

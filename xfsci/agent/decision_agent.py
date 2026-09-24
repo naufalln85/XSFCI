@@ -106,7 +106,7 @@ PRIORITAS KEAMANAN:
         try:
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel(
-                model_name=self.llm_config.get("model", "gemini-2.0-flash"),
+                model_name=self.llm_config.get("model", "gemini-3.6-flash"),
                 system_instruction=self.SYSTEM_PROMPT,
             )
             self.generation_config = genai.GenerationConfig(

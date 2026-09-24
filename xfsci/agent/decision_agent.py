@@ -1,8 +1,10 @@
 # ============================================================
-# XFSCI Decision Agent — Gemini Flash AI Agent
+# XFSCI Decision Agent — Multi-LLM AI Agent
 # ============================================================
-# INTI UTAMA: Modul AI Agent yang menggunakan Google Gemini Flash
-# untuk mengambil keputusan self-healing berdasarkan:
+# INTI UTAMA: Modul AI Agent dengan fallback chain:
+#   Gemini Flash (cloud) → Ollama (lokal) → Rule-based
+#
+# Mengambil keputusan self-healing berdasarkan:
 #   1. Data numerik dari Pandas (FAKTA, bukan opini)
 #   2. SOP Runbook dari RAG (DOKUMEN TERBUKTI)
 #   3. Pengalaman masa lalu dari Experience Memory
@@ -10,7 +12,7 @@
 # ANTI-HALUSINASI:
 #   - Input: Hanya angka dari Pandas + dokumen dari RAG
 #   - Output: JSON terkunci (Pydantic schema)
-#   - Fallback: Rule-based jika API tidak tersedia
+#   - Fallback Chain: Gemini → Ollama → Rule-based
 #   - Guardrails: Validasi sebelum eksekusi
 # ============================================================
 
@@ -23,6 +25,7 @@ from datetime import datetime
 import yaml
 from pathlib import Path
 from loguru import logger
+import httpx
 
 import google.generativeai as genai
 
@@ -86,10 +89,21 @@ PRIORITAS KEAMANAN:
         self.valid_actions = self.agent_config.get("actions", [])
         self.fallback_enabled = self.agent_config.get("fallback", {}).get("enabled", True)
         
+        # Setup Ollama config
+        self.ollama_config = self.agent_config.get("ollama", {})
+        self.ollama_available = False
+        
         # Setup Gemini
         self._setup_gemini()
         
-        logger.info(f"XFSCIDecisionAgent initialized | Model: {self.llm_config.get('model')}")
+        # Setup Ollama
+        self._setup_ollama()
+        
+        logger.info(
+            f"XFSCIDecisionAgent initialized | "
+            f"Gemini: {'✅' if self.gemini_available else '❌'} ({self.llm_config.get('model')}) | "
+            f"Ollama: {'✅' if self.ollama_available else '❌'} ({self.ollama_config.get('model', 'N/A')})"
+        )
     
     def _setup_gemini(self):
         """Konfigurasi Gemini Flash API."""
@@ -120,6 +134,35 @@ PRIORITAS KEAMANAN:
         except Exception as e:
             logger.error(f"Failed to setup Gemini: {e}")
             self.gemini_available = False
+    
+    def _setup_ollama(self):
+        """Konfigurasi Ollama sebagai fallback lokal."""
+        if not self.ollama_config.get("enabled", False):
+            logger.info("Ollama fallback disabled in config")
+            return
+        
+        self.ollama_base_url = self.ollama_config.get("base_url", "http://localhost:11434")
+        self.ollama_model = self.ollama_config.get("model", "qwen2.5:1.5b")
+        self.ollama_timeout = self.ollama_config.get("timeout_seconds", 60)
+        self.ollama_temperature = self.ollama_config.get("temperature", 0.1)
+        
+        # Cek apakah Ollama server berjalan
+        try:
+            resp = httpx.get(f"{self.ollama_base_url}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                models = [m["name"] for m in resp.json().get("models", [])]
+                if any(self.ollama_model in m for m in models):
+                    self.ollama_available = True
+                    logger.success(f"Ollama ready | Model: {self.ollama_model}")
+                else:
+                    logger.warning(
+                        f"Ollama running but model '{self.ollama_model}' not found. "
+                        f"Available: {models}. Run: ollama pull {self.ollama_model}"
+                    )
+            else:
+                logger.warning(f"Ollama server responded with status {resp.status_code}")
+        except Exception:
+            logger.info("Ollama not running — will skip Ollama fallback")
     
     def _build_prompt(self, situation: SituationReport,
                        action_priorities: list[dict] = None) -> str:
@@ -216,17 +259,33 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
         Returns:
             ActionDecision — Keputusan tervalidasi
         """
+        # === Fallback Chain: Gemini → Ollama → Rule-based ===
+        
+        # Step 1: Coba Gemini Flash (cloud)
         if self.gemini_available:
             try:
-                return self._select_with_gemini(situation, action_priorities)
+                result = self._select_with_gemini(situation, action_priorities)
+                if result is not None:
+                    return result
             except Exception as e:
-                logger.error(f"Gemini failed: {e}. Falling back to rule-based.")
-                if self.fallback_enabled:
-                    return self._select_with_rules(situation, action_priorities)
-                raise
+                logger.error(f"Gemini pipeline error: {e}")
+        
+        # Step 2: Coba Ollama (lokal)
+        if self.ollama_available:
+            try:
+                logger.info("Falling back to Ollama (local)...")
+                result = self._select_with_ollama(situation, action_priorities)
+                if result is not None:
+                    return result
+            except Exception as e:
+                logger.error(f"Ollama pipeline error: {e}")
+        
+        # Step 3: Rule-based fallback (always works)
+        if not self.gemini_available and not self.ollama_available:
+            logger.info("No LLM available, using rule-based fallback")
         else:
-            logger.info("Gemini not available, using rule-based fallback")
-            return self._select_with_rules(situation, action_priorities)
+            logger.warning("All LLM attempts failed, using rule-based fallback")
+        return self._select_with_rules(situation, action_priorities)
     
     def _select_with_gemini(self, situation: SituationReport,
                              action_priorities: list[dict] = None) -> ActionDecision:
@@ -289,9 +348,76 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
                     time.sleep(backoff)  # Exponential backoff: 2s, 4s, 8s
                 continue
         
-        # Semua retry gagal → fallback
-        logger.warning("All Gemini retries failed, using rule-based fallback")
-        return self._select_with_rules(situation, action_priorities)
+        # Semua retry gagal → return None agar fallback chain lanjut ke Ollama
+        logger.warning("All Gemini retries failed")
+        return None
+    
+    def _select_with_ollama(self, situation: SituationReport,
+                             action_priorities: list[dict] = None) -> ActionDecision:
+        """
+        Fallback ke Ollama lokal jika Gemini gagal.
+        
+        Menggunakan HTTP API langsung ke Ollama server.
+        Prompt yang sama dengan Gemini untuk konsistensi.
+        """
+        prompt = self._build_prompt(situation, action_priorities)
+        
+        # Gabungkan system prompt + user prompt
+        full_prompt = f"{self.SYSTEM_PROMPT}\n\n{prompt}\n\nRespond ONLY with valid JSON."
+        
+        logger.info(f"Sending prompt to Ollama ({self.ollama_model})...")
+        
+        try:
+            response = httpx.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": self.ollama_model,
+                    "prompt": full_prompt,
+                    "format": "json",
+                    "stream": False,
+                    "options": {
+                        "temperature": self.ollama_temperature,
+                        "num_predict": 1024,
+                    }
+                },
+                timeout=self.ollama_timeout
+            )
+            
+            if response.status_code != 200:
+                logger.warning(f"Ollama returned status {response.status_code}")
+                return None
+            
+            response_text = response.json().get("response", "").strip()
+            response_data = json.loads(response_text)
+            
+            # Validasi dan konversi ke Pydantic model
+            decision = ActionDecision(
+                action=ActionType(response_data["action"]),
+                target_deployment=response_data.get("target_deployment", situation.pandas_metrics.target_pod),
+                target_namespace=response_data.get("target_namespace", "demo"),
+                parameters=ActionParameters(**response_data.get("parameters", {})),
+                confidence=float(response_data.get("confidence", 0.5)),
+                reasoning=response_data.get("reasoning", "No reasoning provided"),
+                data_sources_used=response_data.get("data_sources_used", ["ollama_local"])
+            )
+            
+            logger.success(
+                f"Ollama Decision: {decision.action.value} | "
+                f"Target: {decision.target_deployment} | "
+                f"Confidence: {decision.confidence:.2f}"
+            )
+            
+            return decision
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Ollama returned invalid JSON: {e}")
+            return None
+        except httpx.TimeoutException:
+            logger.warning(f"Ollama timeout after {self.ollama_timeout}s")
+            return None
+        except Exception as e:
+            logger.warning(f"Ollama error: {e}")
+            return None
     
     def _select_with_rules(self, situation: SituationReport,
                             action_priorities: list[dict] = None) -> ActionDecision:

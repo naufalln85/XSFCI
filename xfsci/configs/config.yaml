@@ -167,8 +167,16 @@ ai_agent:
     api_key_env: "GEMINI_API_KEY"  # Nama env variable untuk API key
     temperature: 0.1             # Rendah = konsisten & deterministik
     max_tokens: 1024
-    timeout_seconds: 10          # Max wait time per request
+    timeout_seconds: 30          # Free tier butuh waktu lebih lama
     retry_attempts: 2
+
+  # Ollama Local Fallback (jika Gemini gagal/timeout)
+  ollama:
+    enabled: true
+    base_url: "http://localhost:11434"  # Ollama default endpoint
+    model: "qwen2.5:1.5b"              # Model ringan (~1.5GB RAM)
+    timeout_seconds: 60                 # Lokal, boleh lebih lama
+    temperature: 0.1
 
   # Action Space (sama dengan RL, tapi terkunci via Pydantic schema)
   actions:
@@ -180,7 +188,7 @@ ai_agent:
     - "migrate_pod"              # Pindahkan pod ke node lain
     - "escalate"                 # Eskalasi ke operator manusia
 
-  # Fallback jika LLM API tidak tersedia
+  # Fallback jika semua LLM tidak tersedia
   fallback:
     mode: "rule_based"           # rule_based | escalate_all
     enabled: true

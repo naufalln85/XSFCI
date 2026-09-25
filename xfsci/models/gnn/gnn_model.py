@@ -154,18 +154,18 @@ class DualHeadGATv2(nn.Module):
         # --- Head 1: Node-Level Anomaly Classifier ---
         # Menghasilkan logits [N, num_classes] untuk tiap pod
         self.node_classifier = nn.Sequential(
-            nn.Linear(l2_out_dim, 16),
+            nn.Linear(l2_out_dim, 32),
             nn.ReLU(),
             nn.Dropout(dropout / 2),
-            nn.Linear(16, num_classes),
+            nn.Linear(32, num_classes),
         )
 
         # --- Head 2: Graph-Level Cluster Urgency Score ---
         # Menghasilkan skor skalar [batch_size, 1] antara 0.0 s/d 1.0
         self.graph_urgency_head = nn.Sequential(
-            nn.Linear(l2_out_dim * 2, 16),  # Gabungan mean + max pooling
+            nn.Linear(l2_out_dim * 2, 32),  # Gabungan mean + max pooling
             nn.ReLU(),
-            nn.Linear(16, 1),
+            nn.Linear(32, 1),
             nn.Sigmoid(),
         )
 

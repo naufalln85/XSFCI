@@ -70,14 +70,14 @@ class MultiClassFocalLoss(nn.Module):
     Formula: FL(p_t) = - alpha_t * (1 - p_t)^gamma * log(p_t)
     
     Tujuan:
-      Sampel NORMAL yang sudah berprobabilitas tinggi (misal p=0.95)
-      akan dikalikan faktor (1 - 0.95)^2 = 0.0025 (diredam 400x lipat).
-      Hanya sampel FAULT yang sulit yang menghasilkan gradien besar.
+      Sampel NORMAL yang berbobot tinggi diredam secara proporsional,
+      sementara sampel FAULT (CPU, MEM, CRASH, NET) diberikan energi gradien
+      yang cukup kuat untuk memandu klasifikasi anomali tanpa bias mayoritas.
     """
-    def __init__(self, alpha: Optional[torch.Tensor] = None, gamma: float = 2.0):
+    def __init__(self, alpha: Optional[torch.Tensor] = None, gamma: float = 1.5):
         super().__init__()
         self.alpha = alpha  # class weights [C]
-        self.gamma = gamma  # focusing parameter (gamma=2.0)
+        self.gamma = gamma  # focusing parameter (gamma=1.5)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         ce_loss = F.cross_entropy(logits, targets, reduction="none")
@@ -85,12 +85,14 @@ class MultiClassFocalLoss(nn.Module):
         modulating_factor = (1.0 - p_t) ** self.gamma
         
         if self.alpha is not None:
-            alpha_t = self.alpha[targets]
+            alpha = self.alpha.to(logits.device)
+            alpha_t = alpha[targets]
             focal_loss = alpha_t * modulating_factor * ce_loss
+            # Normalisasi terhadap jumlah bobot aktif dalam batch untuk stabilitas numerik
+            return focal_loss.sum() / torch.clamp(alpha_t.sum(), min=1e-5)
         else:
             focal_loss = modulating_factor * ce_loss
-            
-        return focal_loss.mean()
+            return focal_loss.mean()
 
 
 # ============================================================
@@ -108,7 +110,7 @@ class GNNTrainer:
                  device: torch.device,
                  lr: float = 0.001,
                  weight_decay: float = 1e-4,
-                 gamma: float = 2.0,
+                 gamma: float = 1.5,
                  graph_loss_weight: float = 0.5):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -131,21 +133,39 @@ class GNNTrainer:
             "train_node_loss": [], "train_graph_loss": []
         }
 
-    def _compute_class_weights(self) -> torch.Tensor:
-        """Menghitung smoothed square-root class weights untuk menyeimbangkan loss."""
+    def _compute_class_weights(self, alpha_power: float = 0.6) -> torch.Tensor:
+        """
+        Menghitung class weights adaptif (Effective Sample Balance).
+        Formula: w_c = (1.0 / count_c) ** alpha_power
+        
+        Rasio target:
+          - NORMAL (~80% data) mendapat bobot ~0.16 - 0.22
+          - FAULT classes (~20% data total, ~3-9% per kelas) mendapat bobot ~1.0 - 2.5
+          - Rasio Fault:Normal = ~7:1 s/d 10:1
+          
+        Ini adalah 'sweet spot' matematis:
+          - Menghindari Majority-Class Collapse (Normal recall 100%, Fault F1 0%)
+          - Menghindari Over-Prediction False Alarm (Normal recall 6%, Acc 25%)
+        """
         counts = np.zeros(len(LABEL_MAP), dtype=np.float32)
         for batch in self.train_loader:
             labels = batch.y.cpu().numpy()
             for l in labels:
                 counts[l] += 1
         
-        sqrt_counts = np.sqrt(np.maximum(counts, 1.0))
-        raw_weights = 1.0 / sqrt_counts
-        weights = raw_weights / raw_weights.sum() * len(counts)
-        # Bounded clipping: cegah bobot terlalu timpang (antara 0.5 s/d 2.0)
-        weights = np.clip(weights, 0.5, 2.0)
-        weights = weights / weights.sum() * len(counts)
-        logger.info(f"Focal Loss Alpha Weights: { {IDX_TO_LABEL[i]: round(float(w), 3) for i, w in enumerate(weights)} }")
+        counts = np.maximum(counts, 1.0)
+        inv_counts = (1.0 / counts) ** alpha_power
+        
+        # Normalisasi terhadap rata-rata kelas fault
+        fault_mean = inv_counts[1:].mean()
+        weights = inv_counts / fault_mean
+        
+        # Bounded scaling untuk memastikan stabilitas optimal
+        weights[0] = float(np.clip(weights[0], 0.15, 0.25))
+        for c in range(1, len(weights)):
+            weights[c] = float(np.clip(weights[c], 0.8, 3.0))
+            
+        logger.info(f"Balanced Focal Loss Alpha Weights: { {IDX_TO_LABEL[i]: round(float(w), 3) for i, w in enumerate(weights)} }")
         return torch.tensor(weights, dtype=torch.float32)
 
     def train_epoch(self) -> Tuple[float, float, float]:
@@ -286,10 +306,12 @@ class GNNTrainer:
             "preds": all_preds,
         }
 
-    def run_training(self, epochs: int = 80, patience: int = 40) -> Dict[str, Any]:
+    def run_training(self, epochs: int = 80, patience: int = 0) -> Dict[str, Any]:
+        early_stopping_enabled = (patience > 0)
+        patience_str = f"Patience: {patience}" if early_stopping_enabled else "Disabled (Latih penuh sampai selesai)"
         logger.info("=" * 65)
         logger.info(f"Mulai Pelatihan SOTA GNN: {epochs} Epochs | Device: {self.device}")
-        logger.info(f"Focal Loss (gamma=2.0) | Early Stopping Patience: {patience}")
+        logger.info(f"Focal Loss (gamma={self.node_criterion.gamma}) | Early Stopping: {patience_str}")
         logger.info("=" * 65)
 
         best_score = -1.0
@@ -319,8 +341,21 @@ class GNNTrainer:
             lr_curr = self.optimizer.param_groups[0]["lr"]
 
             # Skor gabungan berstandar paper (Akurasi Kluster + Top-3 RCA + Fault-F1)
-            composite_score = (val_graph_acc * 0.3) + (val_a3 * 0.4) + (val_fault_f1 * 0.3)
+            composite_score = (val_graph_acc * 0.25) + (val_a3 * 0.35) + (val_fault_f1 * 0.40)
 
+            # Checkpoint terbaik berdasarkan skor komposit
+            is_best = False
+            if composite_score > best_score:
+                best_score = composite_score
+                best_epoch = epoch
+                best_metrics = val_res
+                best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
+                patience_counter = 0
+                is_best = True
+            else:
+                patience_counter += 1
+
+            best_tag = " ⭐ BEST" if is_best else ""
             # Cetak setiap 1 epoch tanpa lompat
             logger.info(
                 f"Epoch {epoch:>2}/{epochs} | "
@@ -329,24 +364,15 @@ class GNNTrainer:
                 f"Top-3 RCA: {val_a3*100:5.1f}% | "
                 f"Node Acc: {val_acc*100:5.1f}% | "
                 f"Fault-F1: {val_fault_f1*100:5.1f}% | "
-                f"LR: {lr_curr:.5f}"
+                f"LR: {lr_curr:.5f}{best_tag}"
             )
 
-            # Checkpoint terbaik berdasarkan skor komposit
-            if composite_score > best_score:
-                best_score = composite_score
-                best_epoch = epoch
-                best_metrics = val_res
-                best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.warning(f"Early stopping aktif pada epoch {epoch} (Best epoch: {best_epoch} dengan Score: {best_score*100:.2f}%)")
-                    break
+            if early_stopping_enabled and patience_counter >= patience:
+                logger.warning(f"Early stopping aktif pada epoch {epoch} (Best epoch: {best_epoch} dengan Score: {best_score*100:.2f}%)")
+                break
 
         training_time = round(time.time() - start_time, 2)
-        logger.success(f"\nPelatihan selesai dalam {training_time}s | Best Epoch: {best_epoch}")
+        logger.success(f"\nPelatihan selesai penuh dalam {training_time}s | Best Epoch: {best_epoch}")
 
         # Muat bobot terbaik
         if best_state is not None:
@@ -428,8 +454,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=80, help="Jumlah epoch (default: 80)")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size (default: 32)")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate (default: 0.001)")
-    parser.add_argument("--patience", type=int, default=40, help="Early stopping patience (default: 40)")
-    parser.add_argument("--gamma", type=float, default=2.0, help="Focal Loss gamma parameter (default: 2.0)")
+    parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (default: 0 = nonaktif, melatih penuh sampai selesai)")
+    parser.add_argument("--gamma", type=float, default=1.5, help="Focal Loss gamma parameter (default: 1.5)")
     parser.add_argument("--device", type=str, default="auto", help="Device: cpu | cuda | auto")
     args = parser.parse_args()
 

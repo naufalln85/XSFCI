@@ -29,7 +29,7 @@ namespaces:
 # --- Monitoring (Layer 1) ---
 monitoring:
   prometheus:
-    url: "http://localhost:9090"
+    url: "http://172.20.0.108:30090"  # NodePort (permanent, no port-forward needed)
     scrape_interval: "5s"       # Scrape setiap 5 detik
     retention: "7d"             # Simpan data 7 hari
     storage_size: "10Gi"
@@ -160,7 +160,7 @@ rl_agent:
 
 # --- AI Agent (Layer 4 Primary: Pengganti RL di Produksi) ---
 ai_agent:
-  # LLM Provider
+  # Gemini Flash (cloud backup — free tier 5 RPM)
   llm:
     provider: "gemini"           # gemini | openai | ollama
     model: "gemini-3.6-flash"    # Model Gemini Flash (gratis, cepat)
@@ -170,12 +170,22 @@ ai_agent:
     timeout_seconds: 30          # Free tier butuh waktu lebih lama
     retry_attempts: 2
 
-  # Ollama Local Fallback (jika Gemini gagal/timeout)
+  # Groq Cloud API (PRIMARY — ultra-fast LPU inference, 30 RPM free)
+  groq:
+    enabled: true
+    api_key_env: "GROQ_API_KEY"         # export GROQ_API_KEY=gsk_xxx
+    model: "llama-3.1-8b-instant"       # 8B model, ~800 tok/s on Groq LPU
+    temperature: 0.1
+    max_tokens: 512
+    timeout_seconds: 15                 # Groq biasanya < 1 detik
+    retry_attempts: 2
+
+  # Ollama Local Fallback (jika semua cloud gagal)
   ollama:
     enabled: true
     base_url: "http://172.20.0.108:11434"  # Ollama di Master Node
-    model: "qwen2.5:1.5b"              # Model ringan (~1.5GB RAM)
-    timeout_seconds: 60                 # Lokal, boleh lebih lama
+    model: "qwen2.5:0.5b"              # Model ultra-ringan (~500MB RAM, 3-6s di CPU)
+    timeout_seconds: 60                 # 0.5B cukup cepat, 60s sudah aman
     temperature: 0.1
 
   # Action Space (sama dengan RL, tapi terkunci via Pydantic schema)

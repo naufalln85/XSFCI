@@ -2,7 +2,7 @@
 # XFSCI Decision Agent — Multi-LLM AI Agent
 # ============================================================
 # INTI UTAMA: Modul AI Agent dengan fallback chain:
-#   Gemini Flash (cloud) → Ollama (lokal) → Rule-based
+#   Groq LPU (cloud, ultra-fast) → Gemini Flash (cloud) → Ollama (lokal) → Rule-based
 #
 # Mengambil keputusan self-healing berdasarkan:
 #   1. Data numerik dari Pandas (FAKTA, bukan opini)
@@ -12,7 +12,7 @@
 # ANTI-HALUSINASI:
 #   - Input: Hanya angka dari Pandas + dokumen dari RAG
 #   - Output: JSON terkunci (Pydantic schema)
-#   - Fallback Chain: Gemini → Ollama → Rule-based
+#   - Fallback Chain: Groq → Gemini → Ollama → Rule-based
 #   - Guardrails: Validasi sebelum eksekusi
 # ============================================================
 
@@ -89,18 +89,22 @@ PRIORITAS KEAMANAN:
         self.valid_actions = self.agent_config.get("actions", [])
         self.fallback_enabled = self.agent_config.get("fallback", {}).get("enabled", True)
         
+        # Setup Groq config
+        self.groq_config = self.agent_config.get("groq", {})
+        self.groq_available = False
+        
         # Setup Ollama config
         self.ollama_config = self.agent_config.get("ollama", {})
         self.ollama_available = False
         
-        # Setup Gemini
+        # Setup LLM providers (urutan inisialisasi)
+        self._setup_groq()
         self._setup_gemini()
-        
-        # Setup Ollama
         self._setup_ollama()
         
         logger.info(
             f"XFSCIDecisionAgent initialized | "
+            f"Groq: {'✅' if self.groq_available else '❌'} ({self.groq_config.get('model', 'N/A')}) | "
             f"Gemini: {'✅' if self.gemini_available else '❌'} ({self.llm_config.get('model')}) | "
             f"Ollama: {'✅' if self.ollama_available else '❌'} ({self.ollama_config.get('model', 'N/A')})"
         )
@@ -135,6 +139,57 @@ PRIORITAS KEAMANAN:
             logger.error(f"Failed to setup Gemini: {e}")
             self.gemini_available = False
     
+    def _setup_groq(self):
+        """
+        Konfigurasi Groq Cloud API (LPU ultra-fast inference).
+        
+        Groq menggunakan chip LPU (Language Processing Unit) yang
+        mampu inferensi model 8B pada kecepatan ~800 token/detik.
+        API kompatibel dengan format OpenAI (chat completions).
+        """
+        if not self.groq_config.get("enabled", False):
+            logger.info("Groq Cloud API disabled in config")
+            return
+        
+        api_key_env = self.groq_config.get("api_key_env", "GROQ_API_KEY")
+        self.groq_api_key = os.environ.get(api_key_env, "")
+        
+        if not self.groq_api_key:
+            logger.warning(
+                f"⚠️ {api_key_env} not set! Groq will be skipped. "
+                f"Get free key at: https://console.groq.com/keys"
+            )
+            return
+        
+        self.groq_model = self.groq_config.get("model", "llama-3.1-8b-instant")
+        self.groq_timeout = self.groq_config.get("timeout_seconds", 15)
+        self.groq_temperature = self.groq_config.get("temperature", 0.1)
+        self.groq_max_tokens = self.groq_config.get("max_tokens", 512)
+        self.groq_retry_attempts = self.groq_config.get("retry_attempts", 2)
+        
+        # Validasi koneksi ke Groq API
+        try:
+            resp = httpx.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {self.groq_api_key}"},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                models = [m["id"] for m in resp.json().get("data", [])]
+                if self.groq_model in models:
+                    self.groq_available = True
+                    logger.success(f"Groq Cloud API ready | Model: {self.groq_model}")
+                else:
+                    # Model mungkin masih valid, Groq kadang tidak list semua
+                    self.groq_available = True
+                    logger.success(f"Groq Cloud API connected | Model: {self.groq_model} (not in list, trying anyway)")
+            elif resp.status_code == 401:
+                logger.warning("Groq API key invalid (401 Unauthorized)")
+            else:
+                logger.warning(f"Groq API responded with status {resp.status_code}")
+        except Exception as e:
+            logger.info(f"Groq API not reachable: {e} — will skip Groq")
+    
     def _setup_ollama(self):
         """Konfigurasi Ollama sebagai fallback lokal."""
         if not self.ollama_config.get("enabled", False):
@@ -143,7 +198,7 @@ PRIORITAS KEAMANAN:
         
         self.ollama_base_url = self.ollama_config.get("base_url", "http://localhost:11434")
         self.ollama_model = self.ollama_config.get("model", "qwen2.5:1.5b")
-        self.ollama_timeout = self.ollama_config.get("timeout_seconds", 60)
+        self.ollama_timeout = self.ollama_config.get("timeout_seconds", 180)
         self.ollama_temperature = self.ollama_config.get("temperature", 0.1)
         
         # Cek apakah Ollama server berjalan
@@ -259,18 +314,28 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
         Returns:
             ActionDecision — Keputusan tervalidasi
         """
-        # === Fallback Chain: Gemini → Ollama → Rule-based ===
+        # === Fallback Chain: Groq → Gemini → Ollama → Rule-based ===
         
-        # Step 1: Coba Gemini Flash (cloud)
+        # Step 1: Coba Groq Cloud API (ultra-fast, primary)
+        if self.groq_available:
+            try:
+                result = self._select_with_groq(situation, action_priorities)
+                if result is not None:
+                    return result
+            except Exception as e:
+                logger.error(f"Groq pipeline error: {e}")
+        
+        # Step 2: Coba Gemini Flash (cloud backup)
         if self.gemini_available:
             try:
+                logger.info("Falling back to Gemini Flash...")
                 result = self._select_with_gemini(situation, action_priorities)
                 if result is not None:
                     return result
             except Exception as e:
                 logger.error(f"Gemini pipeline error: {e}")
         
-        # Step 2: Coba Ollama (lokal)
+        # Step 3: Coba Ollama (lokal)
         if self.ollama_available:
             try:
                 logger.info("Falling back to Ollama (local)...")
@@ -280,12 +345,121 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
             except Exception as e:
                 logger.error(f"Ollama pipeline error: {e}")
         
-        # Step 3: Rule-based fallback (always works)
-        if not self.gemini_available and not self.ollama_available:
+        # Step 4: Rule-based fallback (always works)
+        if not self.groq_available and not self.gemini_available and not self.ollama_available:
             logger.info("No LLM available, using rule-based fallback")
         else:
             logger.warning("All LLM attempts failed, using rule-based fallback")
         return self._select_with_rules(situation, action_priorities)
+    
+    def _select_with_groq(self, situation: SituationReport,
+                           action_priorities: list[dict] = None) -> ActionDecision:
+        """
+        Primary LLM: Groq Cloud API (LPU ultra-fast inference).
+        
+        Groq menggunakan chip LPU (Language Processing Unit) yang
+        mampu inferensi model 8B pada ~800 token/detik. API format
+        kompatibel dengan OpenAI chat completions.
+        
+        Menggunakan compact prompt untuk efisiensi token dan
+        response_format=json_object untuk paksa output JSON.
+        """
+        # Gunakan compact prompt (efisien, cocok untuk 8B model)
+        compact_prompt = self._build_compact_prompt(situation, action_priorities)
+        
+        logger.info(f"Sending prompt to Groq ({self.groq_model})...")
+        
+        for attempt in range(self.groq_retry_attempts):
+            try:
+                start_time = time.time()
+                
+                response = httpx.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.groq_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": self.groq_model,
+                        "messages": [
+                            {"role": "system", "content": self.SYSTEM_PROMPT},
+                            {"role": "user", "content": compact_prompt}
+                        ],
+                        "temperature": self.groq_temperature,
+                        "max_tokens": self.groq_max_tokens,
+                        "response_format": {"type": "json_object"},
+                        "stream": False
+                    },
+                    timeout=self.groq_timeout
+                )
+                
+                elapsed = time.time() - start_time
+                
+                if response.status_code == 429:
+                    logger.warning(f"Attempt {attempt + 1}: Groq rate limit (429)")
+                    if attempt < self.groq_retry_attempts - 1:
+                        backoff = 2 ** (attempt + 1)
+                        logger.info(f"Retrying in {backoff}s...")
+                        time.sleep(backoff)
+                    continue
+                
+                if response.status_code != 200:
+                    logger.warning(f"Attempt {attempt + 1}: Groq returned status {response.status_code}")
+                    if attempt < self.groq_retry_attempts - 1:
+                        time.sleep(2 ** (attempt + 1))
+                    continue
+                
+                result = response.json()
+                response_text = result["choices"][0]["message"]["content"].strip()
+                
+                # Log timing dan usage
+                usage = result.get("usage", {})
+                logger.info(
+                    f"Groq responded in {elapsed:.2f}s | "
+                    f"Tokens: {usage.get('prompt_tokens', '?')} in → "
+                    f"{usage.get('completion_tokens', '?')} out"
+                )
+                
+                response_data = json.loads(response_text)
+                
+                # Validasi dan konversi ke Pydantic model
+                decision = ActionDecision(
+                    action=ActionType(response_data["action"]),
+                    target_deployment=response_data.get("target_deployment", situation.pandas_metrics.target_pod),
+                    target_namespace=response_data.get("target_namespace", "demo"),
+                    parameters=ActionParameters(**response_data.get("parameters", {})),
+                    confidence=float(response_data.get("confidence", 0.5)),
+                    reasoning=response_data.get("reasoning", "No reasoning provided"),
+                    data_sources_used=response_data.get("data_sources_used", ["groq_cloud"])
+                )
+                
+                logger.success(
+                    f"Groq Decision: {decision.action.value} | "
+                    f"Target: {decision.target_deployment} | "
+                    f"Confidence: {decision.confidence:.2f} | "
+                    f"Latency: {elapsed:.2f}s"
+                )
+                
+                return decision
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"Attempt {attempt + 1}: Invalid JSON from Groq: {e}")
+                if attempt < self.groq_retry_attempts - 1:
+                    time.sleep(2 ** (attempt + 1))
+                continue
+            except httpx.TimeoutException:
+                logger.warning(f"Attempt {attempt + 1}: Groq timeout after {self.groq_timeout}s")
+                if attempt < self.groq_retry_attempts - 1:
+                    time.sleep(2 ** (attempt + 1))
+                continue
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1}: Groq error: {e}")
+                if attempt < self.groq_retry_attempts - 1:
+                    time.sleep(2 ** (attempt + 1))
+                continue
+        
+        logger.warning("All Groq retries failed")
+        return None
     
     def _select_with_gemini(self, situation: SituationReport,
                              action_priorities: list[dict] = None) -> ActionDecision:
@@ -352,32 +526,77 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
         logger.warning("All Gemini retries failed")
         return None
     
+    def _build_compact_prompt(self, situation: SituationReport,
+                              action_priorities: list[dict] = None) -> str:
+        """
+        Prompt ringkas untuk model kecil (1.5B) di CPU-only mode.
+        
+        Mengurangi token count dari ~2000+ menjadi ~400 agar
+        prompt eval selesai dalam waktu yang wajar di 4 CPU cores.
+        RAG content di-skip karena terlalu besar untuk model kecil.
+        """
+        m = situation.pandas_metrics
+        ml = situation.ml_prediction
+        
+        # Bangun string prioritas aksi (top 3 saja)
+        priority_str = ""
+        if action_priorities:
+            top3 = action_priorities[:3]
+            priority_str = " | ".join(
+                f"{p['action'].value}({p['priority']})" for p in top3
+            )
+        
+        prompt = f"""K8s pod incident. Pick the best action.
+
+METRICS:
+- pod: {m.target_pod}, node: {m.target_node}
+- cpu_5m: {m.cpu_usage_avg_5m}%, mem: {m.memory_usage_mb:.0f}MB ({m.memory_usage_percent:.0f}%)
+- mem_growth: {m.memory_growth_rate_mb_per_min:+.1f}MB/min, restarts_1h: {m.pod_restarts_1h}
+- replicas: {m.current_replicas}, rps: {m.request_rate_rps:.0f}, errors: {m.error_rate_percent:.1f}%
+- p99_latency: {m.latency_p99_ms:.0f}ms
+
+ML: risk={ml.risk_score:.2f}, anomaly={ml.anomaly_type.value}, confidence={ml.confidence:.2f}
+URGENCY: {situation.urgency_score}/100 ({situation.urgency_level.value})
+PRIORITIES: {priority_str or 'none'}
+
+RULES:
+- urgency<30: no_op
+- urgency 30-50: scale_out preventive
+- urgency 50-70: restart_pod or scale_out
+- urgency>85: immediate action
+- confidence<0.85: escalate
+
+Respond with ONLY this JSON:
+{{"action":"<no_op|restart_pod|scale_out|scale_in|rate_limit|migrate_pod|escalate>","target_deployment":"{m.target_pod}","confidence":<0.0-1.0>,"reasoning":"<short reason>"}}"""
+        
+        return prompt
+    
     def _select_with_ollama(self, situation: SituationReport,
                              action_priorities: list[dict] = None) -> ActionDecision:
         """
         Fallback ke Ollama lokal jika Gemini gagal.
         
         Menggunakan HTTP API langsung ke Ollama server.
-        Prompt yang sama dengan Gemini untuk konsistensi.
+        Prompt diringkas khusus untuk model kecil (1.5B) agar
+        tidak timeout di CPU-only mode.
         """
-        prompt = self._build_prompt(situation, action_priorities)
+        # Gunakan prompt ringkas untuk model kecil
+        compact_prompt = self._build_compact_prompt(situation, action_priorities)
         
-        # Gabungkan system prompt + user prompt
-        full_prompt = f"{self.SYSTEM_PROMPT}\n\n{prompt}\n\nRespond ONLY with valid JSON."
-        
-        logger.info(f"Sending prompt to Ollama ({self.ollama_model})...")
+        logger.info(f"Sending compact prompt to Ollama ({self.ollama_model})...")
+        logger.debug(f"Prompt length: ~{len(compact_prompt.split())} words")
         
         try:
             response = httpx.post(
                 f"{self.ollama_base_url}/api/generate",
                 json={
                     "model": self.ollama_model,
-                    "prompt": full_prompt,
+                    "prompt": compact_prompt,
                     "format": "json",
                     "stream": False,
                     "options": {
                         "temperature": self.ollama_temperature,
-                        "num_predict": 1024,
+                        "num_predict": 256,  # Output pendek saja
                     }
                 },
                 timeout=self.ollama_timeout
@@ -387,7 +606,14 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
                 logger.warning(f"Ollama returned status {response.status_code}")
                 return None
             
-            response_text = response.json().get("response", "").strip()
+            result = response.json()
+            response_text = result.get("response", "").strip()
+            
+            # Log timing untuk monitoring
+            total_dur = result.get("total_duration", 0) / 1e9  # ns → s
+            eval_dur = result.get("eval_duration", 0) / 1e9
+            logger.info(f"Ollama responded in {total_dur:.1f}s (eval: {eval_dur:.1f}s)")
+            
             response_data = json.loads(response_text)
             
             # Validasi dan konversi ke Pydantic model

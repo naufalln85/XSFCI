@@ -61,7 +61,38 @@ except ImportError:
     class Dataset(torch.utils.data.Dataset):
         pass
     
+    class BatchGraph:
+        """Container untuk batch graf gabungan (block-diagonal)."""
+        def __init__(self, x, edge_index, y, y_graph, batch):
+            self.x = x
+            self.edge_index = edge_index
+            self.y = y
+            self.y_graph = y_graph
+            self.batch = batch
+        def to(self, device):
+            self.x = self.x.to(device)
+            self.edge_index = self.edge_index.to(device)
+            self.y = self.y.to(device)
+            self.y_graph = self.y_graph.to(device)
+            self.batch = self.batch.to(device)
+            return self
+
+    def fallback_collate_fn(data_list):
+        num_nodes_per_graph = data_list[0].x.size(0)
+        x = torch.cat([d.x for d in data_list], dim=0)
+        y = torch.cat([d.y for d in data_list], dim=0)
+        y_graph = torch.cat([d.y_graph for d in data_list], dim=0)
+        edge_index_list = []
+        batch_list = []
+        for i, d in enumerate(data_list):
+            edge_index_list.append(d.edge_index + i * num_nodes_per_graph)
+            batch_list.append(torch.full((d.x.size(0),), i, dtype=torch.long))
+        edge_index = torch.cat(edge_index_list, dim=1)
+        batch = torch.cat(batch_list, dim=0)
+        return BatchGraph(x, edge_index, y, y_graph, batch)
+    
     DataLoader = torch.utils.data.DataLoader
+
 
 
 # ============================================================
@@ -333,7 +364,7 @@ def create_graph_snapshots_from_csv(csv_path: Path,
             seen_services.add(svc)
 
             x_matrix[svc_idx] = feat_vals
-            y_vector[svc_idx] = int(row["label_id"])
+            y_vector[svc_idx] = max(int(y_vector[svc_idx]), int(row["label_id"]))
 
         # Forward-fill untuk service yang scrape-nya miss di timestamp ini
         for svc in SERVICE_NAMES:
@@ -407,9 +438,11 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
     test_dataset = MicroserviceGraphDataset(test_data)
 
     # PyG DataLoader menangani batching graf secara block-diagonal
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    collate_fn = None if PYG_AVAILABLE else fallback_collate_fn
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn) if not PYG_AVAILABLE else DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn) if not PYG_AVAILABLE else DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn) if not PYG_AVAILABLE else DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
 
     info = {
         "num_services": NUM_SERVICES,

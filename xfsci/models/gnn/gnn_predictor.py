@@ -211,7 +211,7 @@ class GNNPredictor:
         cluster_risk = float(graph_urgency.squeeze().item())
 
         # Diagnosis Target Pod (Hierarchical Gated)
-        if cluster_risk < 0.35:
+        if cluster_risk < 0.50:
             pred_label_id = 0
             confidence = float(1.0 - cluster_risk)
             anomaly_type = AnomalyType.NORMAL

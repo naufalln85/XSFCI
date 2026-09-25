@@ -164,10 +164,10 @@ class GNNTrainer:
         # Formula balanced class weights: total / (n_classes * count_c)
         weights = total_samples / (n_classes * counts)
         
-        # Bounded scaling:
+        # Bounded scaling (sweet spot: per-sample ratio ~6:1):
         weights[0] = float(np.clip(weights[0], 0.20, 0.35))
         for c in range(1, len(weights)):
-            weights[c] = float(np.clip(weights[c], 1.0, 3.0))
+            weights[c] = float(np.clip(weights[c], 1.0, 2.0))
             
         logger.info(f"Balanced Class Weights (CE Loss): { {IDX_TO_LABEL[i]: round(float(w), 3) for i, w in enumerate(weights)} }")
         return torch.tensor(weights, dtype=torch.float32)
@@ -248,13 +248,14 @@ class GNNTrainer:
                 all_graph_targets.extend(g_targets)
 
                 # Hierarchical Cluster-to-Node Gating:
-                # Jika kluster dinyatakan SEHAT oleh global head (g_probs < 0.35),
+                # Jika kluster dinyatakan SEHAT oleh global head (g_probs < 0.50),
                 # maka seluruh pod pada snapshot tersebut dipastikan NORMAL (0).
+                # Threshold 0.50 = sama dengan decision boundary kluster anomaly.
                 num_graphs_in_batch = len(g_targets)
                 for b in range(num_graphs_in_batch):
                     start_node = b * NUM_SERVICES
                     end_node = start_node + NUM_SERVICES
-                    if g_probs[b] < 0.35:
+                    if g_probs[b] < 0.50:
                         preds[start_node:end_node] = 0
 
                 all_preds.extend(preds)

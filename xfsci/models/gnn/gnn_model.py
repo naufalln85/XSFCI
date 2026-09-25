@@ -156,8 +156,11 @@ class DualHeadGATv2(nn.Module):
         # Menggabungkan representasi graf (h2) dan fitur lokal mentah pod (x)
         # via Residual Feature Bypass untuk membedakan node sehat dari tetangga bermasalah.
         self.node_classifier = nn.Sequential(
-            nn.Linear(l2_out_dim + in_channels, 64),
-            nn.ReLU(),
+            nn.Linear(l2_out_dim + in_channels, 128),
+            nn.ELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 64),
+            nn.ELU(),
             nn.Dropout(dropout / 2),
             nn.Linear(64, num_classes),
         )

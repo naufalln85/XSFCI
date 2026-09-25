@@ -284,15 +284,14 @@ def main():
     if args.input:
         csv_path = Path(args.input)
     else:
-        for pattern in ["augmented_*.csv", "cleaned_*.csv", "labeled_*.csv"]:
-            files = sorted(
-                PROCESSED_DIR.glob(pattern),
-                key=lambda p: p.stat().st_mtime, reverse=True
-            )
-            if files:
-                csv_path = files[0]
-                logger.info(f"Using: {csv_path.name}")
-                break
+        # Pilih file input terbaru berdasarkan mtime
+        all_candidates = []
+        for pattern in ["cleaned_*.csv", "augmented_*.csv", "labeled_*.csv"]:
+            all_candidates.extend(PROCESSED_DIR.glob(pattern))
+        if all_candidates:
+            all_candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            csv_path = all_candidates[0]
+            logger.info(f"Using latest processed file: {csv_path.name}")
         else:
             logger.error("Tidak ada file processed. Jalankan pipeline dari data_labeler.py.")
             sys.exit(1)

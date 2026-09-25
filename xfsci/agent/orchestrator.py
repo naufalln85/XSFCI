@@ -106,7 +106,8 @@ class XFSCIOrchestrator:
     def handle_alert(self, deployment_name: str,
                       pod_name: str = None,
                       node_name: str = "unknown",
-                      ml_prediction: MLPrediction = None) -> dict:
+                      ml_prediction: MLPrediction = None,
+                      dry_run: bool = False) -> dict:
         """
         FUNGSI UTAMA: Handle alert dari monitoring system.
         
@@ -279,24 +280,30 @@ class XFSCIOrchestrator:
                 elif decision.action == ActionType.SCALE_IN and optimal_delta < 0:
                     decision.parameters.replicas_to_remove = min(abs(optimal_delta), 3)
             
-            # Sandbox test untuk masalah baru
-            if self.sandbox.should_use_sandbox(rag_similarity, ml_prediction.anomaly_type.value):
-                logger.info("🧪 Novel problem detected, testing in sandbox...")
-                sandbox_result = self.sandbox.test_action(decision)
-                if not sandbox_result["approved"]:
-                    logger.warning(
-                        f"Sandbox REJECTED action: {sandbox_result['details']}"
-                    )
-                    decision = ActionDecision(
-                        action=ActionType.ESCALATE,
-                        target_deployment=deployment_name,
-                        confidence=0.60,
-                        reasoning=(
-                            f"Sandbox test failed: {sandbox_result['details']}. "
-                            f"Escalating to human operator."
-                        ),
-                        data_sources_used=["sandbox_test"]
-                    )
+            # Sandbox test untuk masalah baru (hanya aksi aktif, skip di dry-run)
+            if self.sandbox.should_use_sandbox(
+                rag_similarity, ml_prediction.anomaly_type.value,
+                action=decision.action
+            ):
+                if dry_run:
+                    logger.info("🧪 [DRY-RUN] Sandbox would run but skipped in dry-run mode")
+                else:
+                    logger.info("🧪 Novel problem detected, testing in sandbox...")
+                    sandbox_result = self.sandbox.test_action(decision)
+                    if not sandbox_result["approved"]:
+                        logger.warning(
+                            f"Sandbox REJECTED action: {sandbox_result['details']}"
+                        )
+                        decision = ActionDecision(
+                            action=ActionType.ESCALATE,
+                            target_deployment=deployment_name,
+                            confidence=0.60,
+                            reasoning=(
+                                f"Sandbox test failed: {sandbox_result['details']}. "
+                                f"Escalating to human operator."
+                            ),
+                            data_sources_used=["sandbox_test"]
+                        )
         
         # Confidence gate: Paksa eskalasi jika confidence rendah
         confidence_threshold = self.guardrail_config.get("confidence_threshold", 0.85)
@@ -491,7 +498,8 @@ if __name__ == "__main__":
     orchestrator = XFSCIOrchestrator()
     result = orchestrator.handle_alert(
         deployment_name=args.deployment,
-        node_name=args.node
+        node_name=args.node,
+        dry_run=args.dry_run
     )
     
     logger.info(f"\n{'='*60}")

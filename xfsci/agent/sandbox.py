@@ -53,6 +53,7 @@ class DryRunSandbox:
             config = yaml.safe_load(f)
         
         self.sandbox_config = config.get("sandbox", {})
+        self.enabled = self.sandbox_config.get("enabled", True)
         self.namespace = self.sandbox_config.get("namespace", "xfsci-sandbox")
         self.test_duration = self.sandbox_config.get("test_duration_seconds", 60)
         self.cleanup_after = self.sandbox_config.get("cleanup_after_test", True)
@@ -79,21 +80,34 @@ class DryRunSandbox:
                     f"K8s available: {self.k8s_available}")
     
     def should_use_sandbox(self, rag_similarity: float,
-                            anomaly_type: str = "unknown") -> bool:
+                            anomaly_type: str = "unknown",
+                            action: ActionType = None) -> bool:
         """
         Tentukan apakah sandbox perlu digunakan.
         
         Sandbox digunakan HANYA jika:
-        1. RAG similarity < threshold (masalah baru/tidak dikenal)
-        2. Anomaly type = "unknown"
+        1. Sandbox enabled di config
+        2. Aksi adalah aksi aktif (BUKAN no_op / escalate)
+        3. RAG similarity < threshold (masalah baru/tidak dikenal)
+           ATAU anomaly type = "unknown"
         
         Args:
             rag_similarity: Skor kemiripan RAG (0-1)
             anomaly_type: Jenis anomali terdeteksi
+            action: Jenis aksi keputusan AI (opsional)
         
         Returns:
             True jika sandbox diperlukan
         """
+        # Gate 1: Cek apakah sandbox enabled di config
+        if not self.enabled:
+            return False
+        
+        # Gate 2: Aksi pasif (no_op, escalate) TIDAK perlu sandbox
+        # karena tidak mengubah apapun di kluster
+        if action in (ActionType.NO_OP, ActionType.ESCALATE):
+            return False
+        
         sim_threshold = self.trigger_conditions.get("rag_similarity_below", 0.70)
         check_novel = self.trigger_conditions.get("novel_anomaly_type", True)
         
@@ -217,6 +231,16 @@ class DryRunSandbox:
         """
         logger.info(f"🧪 Starting sandbox test for: {action.action.value} "
                     f"→ {action.target_deployment}")
+        
+        # Guard: aksi pasif tidak perlu clone namespace & tunggu 60s
+        if action.action in (ActionType.NO_OP, ActionType.ESCALATE):
+            logger.info(f"⏭️ Skipping sandbox for passive action: {action.action.value}")
+            return {
+                "approved": True,
+                "improvement": 0,
+                "details": f"Passive action '{action.action.value}' does not need sandbox testing",
+                "duration_seconds": 0
+            }
         
         start_time = time.time()
         

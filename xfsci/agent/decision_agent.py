@@ -29,7 +29,9 @@ from pathlib import Path
 from loguru import logger
 import httpx
 
-import google.generativeai as genai
+# Gemini SDK — lazy-loaded di dalam _setup_gemini() hanya jika enabled di config.
+# Ini menghilangkan FutureWarning banner saat startup ketika Gemini disabled.
+genai = None
 
 from agent.action_schema import (
     ActionType, ActionDecision, ActionParameters,
@@ -140,6 +142,10 @@ PRIORITAS KEAMANAN:
             return
         
         try:
+            global genai
+            if genai is None:
+                import google.generativeai as _genai
+                genai = _genai
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel(
                 model_name=self.llm_config.get("model", "gemini-3.6-flash"),

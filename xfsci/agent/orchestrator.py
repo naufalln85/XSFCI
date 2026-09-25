@@ -62,6 +62,14 @@ except ImportError:
     RAG_AVAILABLE = False
     logger.warning("RAG indexer not available, running without runbook retrieval")
 
+# Conditional import for GNN Layer 2
+try:
+    from models.gnn.gnn_predictor import GNNPredictor
+    GNN_AVAILABLE = True
+except ImportError:
+    GNN_AVAILABLE = False
+
+
 
 class XFSCIOrchestrator:
     """
@@ -95,6 +103,16 @@ class XFSCIOrchestrator:
         self.precision_optimizer = PrecisionOptimizer(config_path)
         self.multi_step_planner = MultiStepPlanner(config_path)
         self.experience_memory = ExperienceMemory(config_path)
+        
+        # GNN Predictor (Layer 2)
+        if GNN_AVAILABLE:
+            try:
+                self.gnn_predictor = GNNPredictor()
+            except Exception as e:
+                logger.warning(f"GNN Predictor initialization fallback: {e}")
+                self.gnn_predictor = None
+        else:
+            self.gnn_predictor = None
         
         # Action history untuk cooldown tracking
         self.action_history: list[dict] = []
@@ -152,19 +170,32 @@ class XFSCIOrchestrator:
                 latency_p50_ms=0, latency_p99_ms=0
             )
         
-        # ===== TAHAP 2: ML Prediction (jika tidak disediakan) =====
+        # ===== TAHAP 2: ML Prediction (GNN Layer 2) =====
         if ml_prediction is None:
-            logger.info("[2/7] 🧠 Using Pandas-detected anomaly (no ML model yet)...")
-            anomaly = self.pandas_processor.detect_anomaly_pattern(
-                pandas_metrics.model_dump()
-            )
-            ml_prediction = MLPrediction(
-                risk_score=0.5 if anomaly != AnomalyType.NORMAL else 0.1,
-                anomaly_type=anomaly,
-                confidence=0.80,
-                time_to_failure_minutes=None,
-                cascade_risk=[]
-            )
+            if self.gnn_predictor and self.gnn_predictor.is_ready:
+                logger.info("[2/7] 🧠 Running GNN Layer 2 (Topology-Aware Anomaly Prediction)...")
+                try:
+                    metrics_dict = {deployment_name: pandas_metrics.model_dump()}
+                    ml_prediction = self.gnn_predictor.predict_target(
+                        target_deployment=deployment_name,
+                        current_metrics_map=metrics_dict
+                    )
+                except Exception as e:
+                    logger.warning(f"GNN inference error: {e}, falling back to rule-based.")
+                    ml_prediction = None
+
+            if ml_prediction is None:
+                logger.info("[2/7] 🧠 Using Pandas-detected anomaly (no ML model yet)...")
+                anomaly = self.pandas_processor.detect_anomaly_pattern(
+                    pandas_metrics.model_dump()
+                )
+                ml_prediction = MLPrediction(
+                    risk_score=0.5 if anomaly != AnomalyType.NORMAL else 0.1,
+                    anomaly_type=anomaly,
+                    confidence=0.80,
+                    time_to_failure_minutes=None,
+                    cascade_risk=[]
+                )
         else:
             logger.info("[2/7] 🧠 Using provided ML prediction")
         

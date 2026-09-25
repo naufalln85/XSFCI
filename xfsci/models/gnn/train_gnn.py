@@ -160,10 +160,11 @@ class GNNTrainer:
         fault_mean = inv_counts[1:].mean()
         weights = inv_counts / fault_mean
         
-        # Bounded scaling untuk memastikan stabilitas optimal
-        weights[0] = float(np.clip(weights[0], 0.15, 0.25))
+        # Bounded scaling: berikan bobot NORMAL di rentang [0.28, 0.38]
+        # untuk mencegah over-prediksi/false alarm pada sampel normal
+        weights[0] = float(np.clip(weights[0], 0.28, 0.38))
         for c in range(1, len(weights)):
-            weights[c] = float(np.clip(weights[c], 0.8, 3.0))
+            weights[c] = float(np.clip(weights[c], 0.8, 2.5))
             
         logger.info(f"Balanced Focal Loss Alpha Weights: { {IDX_TO_LABEL[i]: round(float(w), 3) for i, w in enumerate(weights)} }")
         return torch.tensor(weights, dtype=torch.float32)
@@ -236,14 +237,25 @@ class GNNTrainer:
                 preds = torch.argmax(node_logits, dim=-1).cpu().numpy()
                 targets = batch.y.cpu().numpy()
 
-                all_preds.extend(preds)
-                all_targets.extend(targets)
-
                 # Graph-level predictions (anomali kluster 0 vs 1)
-                g_preds = (graph_urgency.squeeze(-1) >= 0.5).long().cpu().numpy()
+                g_probs = graph_urgency.squeeze(-1).cpu().numpy()
+                g_preds = (g_probs >= 0.5).astype(np.int64)
                 g_targets = (batch.y_graph.squeeze(-1) >= 0.5).long().cpu().numpy()
                 all_graph_preds.extend(g_preds)
                 all_graph_targets.extend(g_targets)
+
+                # Hierarchical Cluster-to-Node Gating:
+                # Jika kluster dinyatakan SEHAT oleh global head (g_probs < 0.35),
+                # maka seluruh pod pada snapshot tersebut dipastikan NORMAL (0).
+                num_graphs_in_batch = len(g_targets)
+                for b in range(num_graphs_in_batch):
+                    start_node = b * NUM_SERVICES
+                    end_node = start_node + NUM_SERVICES
+                    if g_probs[b] < 0.35:
+                        preds[start_node:end_node] = 0
+
+                all_preds.extend(preds)
+                all_targets.extend(targets)
 
                 # Evaluasi Root Cause Localization (RCA Top-1 & Top-3) per graf
                 num_graphs_in_batch = len(g_targets)

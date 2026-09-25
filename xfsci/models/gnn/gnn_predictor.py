@@ -207,14 +207,19 @@ class GNNPredictor:
 
         elapsed_ms = (time.time() - start_time) * 1000
 
-        # Diagnosis Target Pod
-        target_probs = node_probs[target_idx].cpu().numpy()
-        pred_label_id = int(np.argmax(target_probs))
-        confidence = float(target_probs[pred_label_id])
-        anomaly_type = GNN_LABEL_TO_ANOMALY_TYPE.get(pred_label_id, AnomalyType.NORMAL)
-
         # Global cluster risk
         cluster_risk = float(graph_urgency.squeeze().item())
+
+        # Diagnosis Target Pod (Hierarchical Gated)
+        if cluster_risk < 0.35:
+            pred_label_id = 0
+            confidence = float(1.0 - cluster_risk)
+            anomaly_type = AnomalyType.NORMAL
+        else:
+            target_probs = node_probs[target_idx].cpu().numpy()
+            pred_label_id = int(np.argmax(target_probs))
+            confidence = float(target_probs[pred_label_id])
+            anomaly_type = GNN_LABEL_TO_ANOMALY_TYPE.get(pred_label_id, AnomalyType.NORMAL)
 
         # Root Cause Analysis: Cari pod dengan probabilitas anomali non-normal tertinggi
         non_normal_probs = 1.0 - node_probs[:, 0].cpu().numpy()

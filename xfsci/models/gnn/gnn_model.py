@@ -153,11 +153,13 @@ class DualHeadGATv2(nn.Module):
 
         # --- Head 1: Node-Level Anomaly Classifier ---
         # Menghasilkan logits [N, num_classes] untuk tiap pod
+        # Menggabungkan representasi graf (h2) dan fitur lokal mentah pod (x)
+        # via Residual Feature Bypass untuk membedakan node sehat dari tetangga bermasalah.
         self.node_classifier = nn.Sequential(
-            nn.Linear(l2_out_dim, 32),
+            nn.Linear(l2_out_dim + in_channels, 64),
             nn.ReLU(),
             nn.Dropout(dropout / 2),
-            nn.Linear(32, num_classes),
+            nn.Linear(64, num_classes),
         )
 
         # --- Head 2: Graph-Level Cluster Urgency Score ---
@@ -224,8 +226,9 @@ class DualHeadGATv2(nn.Module):
         h2 = self.activation(h2)
         h2 = self.dropout(h2)
 
-        # --- Head 1: Node Classification ---
-        node_logits = self.node_classifier(h2)
+        # --- Head 1: Node Classification with Residual Local Feature Bypass ---
+        node_rep = torch.cat([h2, x], dim=-1)
+        node_logits = self.node_classifier(node_rep)
 
         # --- Head 2: Graph-Level Global Risk Pooling ---
         if batch is None:

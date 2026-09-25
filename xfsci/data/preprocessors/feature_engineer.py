@@ -165,7 +165,7 @@ class FeatureEngineer:
         score = (
             0.35 * norm(df["cpu_usage"].clip(0, 4)) +
             0.25 * norm(df["memory_usage"].clip(0, 4 * 1024**3)) +
-            0.20 * norm(df["pod_restarts"].clip(0, 10)) +
+            0.20 * norm(df["restart_delta"].clip(0, 5)) +
             0.10 * norm(df["memory_growth_rate"].clip(0, 100)) +
             0.10 * norm(df["net_total_bytes"].clip(0, 1e8))
         )

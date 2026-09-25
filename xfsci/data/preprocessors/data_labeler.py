@@ -52,6 +52,7 @@ LABEL_NET_LATENCY     = "FAULT_NETWORK_LATENCY"
 WORKER1_PODS = ["frontend", "loadgenerator", "recommendationservice", "paymentservice"]
 WORKER2_PODS = ["adservice", "cartservice", "productcatalogservice", "redis-cart"]
 WORKER3_PODS = ["checkoutservice", "currencyservice", "emailservice", "shippingservice"]
+POD_CRASH_TARGETS = ["frontend", "cartservice", "recommendationservice", "paymentservice"]
 
 
 def get_pod_prefix(pod_name: str) -> str:
@@ -83,25 +84,36 @@ class XFSCIDataLabeler:
         # Prioritas: NORMAL < NET_LATENCY < POD_CRASH < MEMORY_LEAK < CPU_STRESS
         if "net_latency" in self.fault_windows:
             w = self.fault_windows["net_latency"]
-            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(WORKER3_PODS)
+            target_pods = w.get("target_pods") or WORKER3_PODS
+            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(target_pods)
             df.loc[mask, "label"] = LABEL_NET_LATENCY
             logger.info(f"  NETWORK_LATENCY : {mask.sum():>5} rows")
 
         if "pod_crash" in self.fault_windows:
             w = self.fault_windows["pod_crash"]
-            mask = (ts >= w["start"]) & (ts <= w["end"])
+            target_pods = w.get("target_pods") or POD_CRASH_TARGETS
+            in_window = (ts >= w["start"]) & (ts <= w["end"])
+            # Hanya beri label POD_CRASH pada pod target yang restart-nya > 0 jika ada data restart,
+            # atau setidaknya terbatas pada target_pods (bukan 11 pod seluruh cluster!)
+            has_restarts = ((df.loc[in_window, "pod_restarts"] > 0) & pod_prefix.isin(target_pods)).any()
+            if has_restarts:
+                mask = in_window & (df["pod_restarts"] > 0) & pod_prefix.isin(target_pods)
+            else:
+                mask = in_window & pod_prefix.isin(target_pods)
             df.loc[mask, "label"] = LABEL_POD_CRASH
             logger.info(f"  POD_CRASH       : {mask.sum():>5} rows")
 
         if "memory_leak" in self.fault_windows:
             w = self.fault_windows["memory_leak"]
-            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(WORKER2_PODS)
+            target_pods = w.get("target_pods") or WORKER2_PODS
+            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(target_pods)
             df.loc[mask, "label"] = LABEL_MEMORY_LEAK
             logger.info(f"  MEMORY_LEAK     : {mask.sum():>5} rows")
 
         if "cpu_stress" in self.fault_windows:
             w = self.fault_windows["cpu_stress"]
-            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(WORKER2_PODS)
+            target_pods = w.get("target_pods") or WORKER2_PODS
+            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(target_pods)
             df.loc[mask, "label"] = LABEL_CPU_STRESS
             logger.info(f"  CPU_STRESS      : {mask.sum():>5} rows")
 
@@ -148,11 +160,10 @@ def auto_detect_windows(csv_path: Path, session: str = "standard") -> dict:
 
     if session == "turbo":
         # Timing dari run_faults_turbo.sh (~15 menit)
-        # Baseline 3min, fault 1min, recovery 1min, ...
         windows = {
             "cpu_stress":  {"start": T(3.0),  "end": T(4.0),  "target_pods": WORKER1_PODS},
             "memory_leak": {"start": T(5.0),  "end": T(6.0),  "target_pods": WORKER3_PODS},
-            "pod_crash":   {"start": T(7.0),  "end": T(12.0), "target_pods": None},
+            "pod_crash":   {"start": T(7.0),  "end": T(12.0), "target_pods": POD_CRASH_TARGETS},
             "net_latency": {"start": T(13.0), "end": T(14.0), "target_pods": WORKER1_PODS},
         }
     else:
@@ -160,7 +171,7 @@ def auto_detect_windows(csv_path: Path, session: str = "standard") -> dict:
         windows = {
             "cpu_stress":  {"start": T(10.0), "end": T(12.5), "target_pods": WORKER2_PODS},
             "memory_leak": {"start": T(17.0), "end": T(22.5), "target_pods": WORKER2_PODS},
-            "pod_crash":   {"start": T(27.0), "end": T(42.0), "target_pods": None},
+            "pod_crash":   {"start": T(27.0), "end": T(42.0), "target_pods": POD_CRASH_TARGETS},
             "net_latency": {"start": T(47.0), "end": T(50.5), "target_pods": WORKER3_PODS},
         }
 

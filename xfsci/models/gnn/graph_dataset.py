@@ -204,8 +204,8 @@ def extract_service_name(pod_name: str) -> str:
 # ============================================================
 
 def build_static_edge_index(topology_path: Optional[Path] = None,
-                            include_co_location: bool = True,
-                            bidirectional: bool = True,
+                            include_co_location: bool = False,
+                            bidirectional: bool = False,
                             self_loops: bool = True) -> torch.Tensor:
     """
     Membangun edge_index (format COO [2, E]) yang menghubungkan 11 microservices.
@@ -337,8 +337,13 @@ def create_graph_snapshots_from_csv(csv_path: Path,
     num_features = len(features_to_use)
     logger.info(f"Menggunakan {num_features} fitur node: {features_to_use[:4]} ...")
 
-    # Siapkan Edge Index statis
-    edge_index = build_static_edge_index(topology_path=topology_path)
+    # Siapkan Edge Index statis (RPC dependencies murni searah, mencegah over-smoothing)
+    edge_index = build_static_edge_index(
+        topology_path=topology_path,
+        include_co_location=False,
+        bidirectional=False,
+        self_loops=True,
+    )
 
     # Kelompokkan berdasarkan interval waktu (5 detik)
     # Bulatkan timestamp ke kelipatan 5 detik terdekat

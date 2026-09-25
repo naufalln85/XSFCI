@@ -60,6 +60,7 @@ _sorted_features = sorted(NORMALIZED_FEATURE_COLS)
 IDX_ANOMALY_SCORE = _sorted_features.index("anomaly_score_raw_norm")  # 0
 IDX_CPU_USAGE = _sorted_features.index("cpu_usage_norm")              # 4
 IDX_POD_RESTARTS = _sorted_features.index("pod_restarts_norm")        # 15
+IDX_RESTART_DELTA = _sorted_features.index("restart_delta_norm")      # 17
 from models.gnn.gnn_model import DualHeadGATv2
 
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
@@ -254,16 +255,26 @@ class GNNTrainer:
                 all_graph_preds.extend(g_preds)
                 all_graph_targets.extend(g_targets)
 
-                # Hierarchical Cluster-to-Node Gating:
-                # Jika kluster dinyatakan SEHAT oleh global head (g_probs < 0.50),
-                # maka seluruh pod pada snapshot tersebut dipastikan NORMAL (0).
-                # Threshold 0.50 = sama dengan decision boundary kluster anomaly.
+                # Hierarchical Cluster-to-Node Gating & Physical Guardrails:
+                # 1. Jika kluster dinyatakan SEHAT oleh global head (g_probs < 0.50),
+                #    maka seluruh pod pada snapshot tersebut dipastikan NORMAL (0).
+                # 2. Jika kluster anomali, terapkan sanity guardrails pada node individual:
+                #    - FAULT_POD_CRASH (3): mustahil jika restart_delta == 0 dan pod_restarts == 0.
+                #    - FAULT_CPU_STRESS (1): mustahil jika cpu_usage_norm < 0.05 (sangat dingin/idle).
+                batch_x_np = batch.x.cpu().numpy()
                 num_graphs_in_batch = len(g_targets)
                 for b in range(num_graphs_in_batch):
                     start_node = b * NUM_SERVICES
                     end_node = start_node + NUM_SERVICES
                     if g_probs[b] < 0.50:
                         preds[start_node:end_node] = 0
+                    else:
+                        for n in range(start_node, end_node):
+                            p = preds[n]
+                            if p == 3 and batch_x_np[n, IDX_POD_RESTARTS] == 0 and batch_x_np[n, IDX_RESTART_DELTA] == 0:
+                                preds[n] = 0
+                            elif p == 1 and batch_x_np[n, IDX_CPU_USAGE] < 0.05:
+                                preds[n] = 0
 
                 all_preds.extend(preds)
                 all_targets.extend(targets)
@@ -287,9 +298,9 @@ class GNNTrainer:
                         raw_x = batch.x[start_node:end_node].cpu().numpy()
                         local_anomaly = raw_x[:, IDX_ANOMALY_SCORE]
                         local_cpu = raw_x[:, IDX_CPU_USAGE]
-                        local_restart = raw_x[:, IDX_POD_RESTARTS]
+                        local_restart = raw_x[:, IDX_RESTART_DELTA]  # Gunakan delta saat ini, bukan akumulasi lama!
                         # Gabungan fitur lokal (weighted average)
-                        local_scores = 0.50 * local_anomaly + 0.30 * local_cpu + 0.20 * local_restart
+                        local_scores = 0.40 * local_anomaly + 0.30 * local_cpu + 0.30 * local_restart
                         # Hybrid: 30% GNN + 70% lokal (mengatasi graph contamination)
                         anomaly_scores = 0.30 * gnn_scores + 0.70 * local_scores
                         # Ranking pod dari skor anomali tertinggi

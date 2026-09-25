@@ -210,21 +210,6 @@ class GNNPredictor:
         # Global cluster risk
         cluster_risk = float(graph_urgency.squeeze().item())
 
-        # Diagnosis Target Pod (Hierarchical Gated)
-        if cluster_risk < 0.50:
-            pred_label_id = 0
-            confidence = float(1.0 - cluster_risk)
-            anomaly_type = AnomalyType.NORMAL
-        else:
-            target_probs = node_probs[target_idx].cpu().numpy()
-            pred_label_id = int(np.argmax(target_probs))
-            confidence = float(target_probs[pred_label_id])
-            anomaly_type = GNN_LABEL_TO_ANOMALY_TYPE.get(pred_label_id, AnomalyType.NORMAL)
-
-        # Root Cause Analysis: Hybrid scoring (GNN + Local Features)
-        # GNN skor terkontaminasi oleh tetangga, jadi digabung dengan fitur lokal
-        gnn_anomaly = 1.0 - node_probs[:, 0].cpu().numpy()
-        # Fitur lokal: anomaly_score_raw_norm (idx 0), cpu_usage_norm (idx 4), pod_restarts_norm (idx 15)
         raw_features = x_tensor.cpu().numpy()
         _sorted_feats = sorted([
             "anomaly_score_raw_norm", "cpu_delta_norm", "cpu_rolling_mean_5_norm",
@@ -236,10 +221,32 @@ class GNNPredictor:
         ])
         idx_anomaly = _sorted_feats.index("anomaly_score_raw_norm")
         idx_cpu = _sorted_feats.index("cpu_usage_norm")
-        idx_restart = _sorted_feats.index("pod_restarts_norm")
-        local_scores = (0.50 * raw_features[:, idx_anomaly] +
+        idx_pod_restarts = _sorted_feats.index("pod_restarts_norm")
+        idx_restart_delta = _sorted_feats.index("restart_delta_norm")
+
+        # Diagnosis Target Pod (Hierarchical Gated + Physical Guardrails)
+        if cluster_risk < 0.50:
+            pred_label_id = 0
+            confidence = float(1.0 - cluster_risk)
+            anomaly_type = AnomalyType.NORMAL
+        else:
+            target_probs = node_probs[target_idx].cpu().numpy().copy()
+            # Physical Guardrail checks on target pod:
+            if raw_features[target_idx, idx_pod_restarts] == 0 and raw_features[target_idx, idx_restart_delta] == 0:
+                target_probs[3] = 0.0  # Hapus kemungkinan Pod Crash jika pod tidak pernah/sedang restart
+            if raw_features[target_idx, idx_cpu] < 0.05:
+                target_probs[1] = 0.0  # Hapus kemungkinan CPU Stress jika CPU sangat dingin
+
+            pred_label_id = int(np.argmax(target_probs))
+            confidence = float(target_probs[pred_label_id])
+            anomaly_type = GNN_LABEL_TO_ANOMALY_TYPE.get(pred_label_id, AnomalyType.NORMAL)
+
+        # Root Cause Analysis: Hybrid scoring (GNN + Local Features)
+        # GNN skor terkontaminasi oleh tetangga, jadi digabung dengan fitur lokal
+        gnn_anomaly = 1.0 - node_probs[:, 0].cpu().numpy()
+        local_scores = (0.40 * raw_features[:, idx_anomaly] +
                         0.30 * raw_features[:, idx_cpu] +
-                        0.20 * raw_features[:, idx_restart])
+                        0.30 * raw_features[:, idx_restart_delta])
         # Hybrid: 30% GNN + 70% lokal
         hybrid_scores = 0.30 * gnn_anomaly + 0.70 * local_scores
         root_cause_idx = int(np.argmax(hybrid_scores))

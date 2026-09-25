@@ -160,25 +160,26 @@ rl_agent:
 
 # --- AI Agent (Layer 4 Primary: Pengganti RL di Produksi) ---
 ai_agent:
-  # Gemini Flash (cloud backup — free tier 5 RPM)
-  llm:
-    provider: "gemini"           # gemini | openai | ollama
-    model: "gemini-3.6-flash"    # Model Gemini Flash (gratis, cepat)
-    api_key_env: "GEMINI_API_KEY"  # Nama env variable untuk API key
-    temperature: 0.1             # Rendah = konsisten & deterministik
-    max_tokens: 1024
-    timeout_seconds: 30          # Free tier butuh waktu lebih lama
-    retry_attempts: 2
-
   # Groq Cloud API (PRIMARY — ultra-fast LPU inference, 30 RPM free)
   groq:
     enabled: true
     api_key_env: "GROQ_API_KEY"         # export GROQ_API_KEY=gsk_xxx
     model: "openai/gpt-oss-20b"         # Official Groq recommendation, ~800 tok/s on Groq LPU
     temperature: 0.1
-    max_tokens: 512
+    max_tokens: 1024                    # Mendukung prompt lengkap + RAG & reasoning
     timeout_seconds: 15                 # Groq biasanya < 1 detik
     retry_attempts: 2
+
+  # Gemini Flash (DISABLED — dinonaktifkan untuk mencegah timeout & rate limit)
+  llm:
+    enabled: false
+    provider: "gemini"
+    model: "gemini-3.6-flash"
+    api_key_env: "GEMINI_API_KEY"
+    temperature: 0.1
+    max_tokens: 1024
+    timeout_seconds: 15
+    retry_attempts: 1
 
   # Ollama Local Fallback (jika semua cloud gagal)
   ollama:

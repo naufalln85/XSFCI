@@ -194,6 +194,7 @@ class GNNTrainer:
             self.history["train_node_loss"].append(train_node)
             self.history["train_graph_loss"].append(train_graph)
 
+            lr_curr = self.optimizer.param_groups[0]["lr"]
             val_score = (val_acc + val_f1) / 2.0
 
             if epoch % 5 == 0 or epoch == 1 or val_score > best_val_score:

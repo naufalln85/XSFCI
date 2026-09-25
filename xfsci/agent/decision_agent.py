@@ -1,10 +1,10 @@
 # ============================================================
-# XFSCI Decision Agent — Multi-LLM AI Agent
+# XFSCI Decision Agent — Edge-Cloud 3-Tier AI Agent
 # ============================================================
-# INTI UTAMA: Modul AI Agent dengan arsitektur Edge-Cloud 3-Tier:
-#   Tier 1: Groq Cloud LPU (openai/gpt-oss-20b, ultra-fast sub-second, full RAG)
-#   Tier 2: Ollama Local (qwen2.5:0.5b di Master Node, 100% offline edge fallback)
-#   Tier 3: Rule-based Engine (100% deterministik, safety net SLA)
+# INTI UTAMA: Modul AI Agent dengan arsitektur Cloud-Edge-Deterministic:
+#   Tier 1: Groq LPU (cloud, ultra-fast, full RAG + Memory)
+#   Tier 2: Ollama 0.5B (lokal/edge, offline-capable)
+#   Tier 3: Rule-based engine (deterministik, always works)
 #
 # Mengambil keputusan self-healing berdasarkan:
 #   1. Data numerik dari Pandas (FAKTA, bukan opini)
@@ -14,7 +14,7 @@
 # ANTI-HALUSINASI:
 #   - Input: Hanya angka dari Pandas + dokumen dari RAG
 #   - Output: JSON terkunci (Pydantic schema)
-#   - Fallback Chain: Groq → Gemini → Ollama → Rule-based
+#   - Fallback Chain: Groq → Ollama → Rule-based
 #   - Guardrails: Validasi sebelum eksekusi
 # ============================================================
 
@@ -41,14 +41,22 @@ from agent.action_schema import (
 
 class XFSCIDecisionAgent:
     """
-    AI Agent berbasis Gemini Flash untuk pengambilan keputusan
-    self-healing di infrastruktur cloud Kubernetes.
+    AI Agent dengan arsitektur Edge-Cloud 3-Tier untuk pengambilan
+    keputusan self-healing di infrastruktur cloud Kubernetes.
+    
+    Arsitektur Fallback:
+    - Tier 1 (Cloud Brain): Groq LPU — inferensi ultra-cepat (<1.5s)
+      dengan full RAG Runbook + Experience Memory
+    - Tier 2 (Edge/Local): Ollama 0.5B — offline-capable (3-5s di CPU)
+      dengan compact prompt untuk hemat resource
+    - Tier 3 (Safety Net): Rule-based engine — deterministik (0.001s)
+      selalu berhasil, tanpa dependensi eksternal
     
     Prinsip desain:
-    1. Gemini HANYA melihat data yang sudah disiapkan (tidak query sendiri)
-    2. Gemini HANYA boleh memilih aksi dari enum terkunci
-    3. Gemini WAJIB menjelaskan alasannya berdasarkan data & SOP
-    4. Jika Gemini API gagal → Fallback ke rule-based engine
+    1. LLM HANYA melihat data yang sudah disiapkan (tidak query sendiri)
+    2. LLM HANYA boleh memilih aksi dari enum terkunci
+    3. LLM WAJIB menjelaskan alasannya berdasarkan data & SOP
+    4. Jika semua LLM gagal → Fallback ke rule-based engine
     """
     
     # System prompt yang mengunci perilaku AI Agent
@@ -101,30 +109,32 @@ PRIORITAS KEAMANAN:
         
         # Setup LLM providers (urutan inisialisasi)
         self._setup_groq()
-        self._setup_gemini()
+        
+        # Gemini: hanya inisialisasi jika enabled (default: disabled)
+        if self.llm_config.get("enabled", False):
+            self._setup_gemini()
+        else:
+            self.gemini_available = False
+            logger.info("Gemini disabled via config (3-tier mode: Groq → Ollama → Rules)")
+        
         self._setup_ollama()
         
-        gemini_status = "⏸️ (disabled)" if not self.llm_config.get("enabled", False) else ("✅" if self.gemini_available else "❌")
         logger.info(
             f"XFSCIDecisionAgent initialized | "
             f"Groq: {'✅' if self.groq_available else '❌'} ({self.groq_config.get('model', 'N/A')}) | "
-            f"Gemini: {gemini_status} | "
+            f"Gemini: {'⏸️ disabled' if not self.llm_config.get('enabled', False) else ('✅' if self.gemini_available else '❌')} | "
             f"Ollama: {'✅' if self.ollama_available else '❌'} ({self.ollama_config.get('model', 'N/A')})"
         )
     
     def _setup_gemini(self):
         """Konfigurasi Gemini Flash API."""
-        if not self.llm_config.get("enabled", False):
-            logger.info("Gemini Flash disabled in config")
-            self.gemini_available = False
-            return
-            
         api_key_env = self.llm_config.get("api_key_env", "GEMINI_API_KEY")
         api_key = os.environ.get(api_key_env, "")
         
         if not api_key:
             logger.warning(
-                f"⚠️ {api_key_env} not set! Set it with: export {api_key_env}=your_api_key"
+                f"⚠️ {api_key_env} not set! AI Agent will use rule-based fallback. "
+                f"Set it with: export {api_key_env}=your_api_key"
             )
             self.gemini_available = False
             return
@@ -308,11 +318,13 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
         """
         Fungsi utama: Pilih aksi terbaik untuk situasi yang diberikan.
         
-        Pipeline:
-        1. Cek apakah Gemini tersedia
-        2. Jika ya → Kirim prompt ke Gemini → Parse JSON response
-        3. Jika tidak → Fallback ke rule-based engine
-        4. Validasi output dengan Pydantic schema
+        Edge-Cloud 3-Tier Fallback Pipeline:
+        1. Tier 1 (Cloud): Groq LPU — full RAG prompt, <1.5s
+        2. Tier 2 (Edge):  Ollama 0.5B lokal — compact prompt, 3-5s
+        3. Tier 3 (Safe):  Rule-based engine — deterministik, 0.001s
+        
+        Gemini dipertahankan di kode sebagai cadangan opsional
+        (enabled: false di config), bisa diaktifkan kembali jika dibutuhkan.
         
         Args:
             situation: Laporan situasi lengkap
@@ -321,9 +333,9 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
         Returns:
             ActionDecision — Keputusan tervalidasi
         """
-        # === Fallback Chain: Groq (Cloud) → Ollama (Edge Local) → Rule-based ===
+        # === 3-Tier Fallback: Groq (Cloud) → Ollama (Edge) → Rules (Safe) ===
         
-        # Step 1: Coba Groq Cloud API (ultra-fast LPU, primary)
+        # Tier 1: Groq Cloud API (ultra-fast, full RAG + Memory)
         if self.groq_available:
             try:
                 result = self._select_with_groq(situation, action_priorities)
@@ -331,9 +343,8 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
                     return result
             except Exception as e:
                 logger.error(f"Groq pipeline error: {e}")
-            logger.warning("Groq unavailable or failed, falling back to Ollama (Edge Local)...")
         
-        # Step 2: Coba Gemini Flash (hanya jika diaktifkan di config)
+        # Tier 1.5 (opsional): Gemini Flash — hanya jika diaktifkan di config
         if self.gemini_available:
             try:
                 logger.info("Falling back to Gemini Flash...")
@@ -342,41 +353,45 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
                     return result
             except Exception as e:
                 logger.error(f"Gemini pipeline error: {e}")
-            logger.warning("Gemini failed, falling back to Ollama...")
         
-        # Step 3: Coba Ollama (Edge Local — 100% offline fallback)
+        # Tier 2: Ollama lokal (edge, offline-capable)
         if self.ollama_available:
             try:
-                logger.info("Falling back to Ollama (Edge Local)...")
+                logger.info("Falling back to Ollama (local/edge)...")
                 result = self._select_with_ollama(situation, action_priorities)
                 if result is not None:
                     return result
             except Exception as e:
                 logger.error(f"Ollama pipeline error: {e}")
         
-        # Step 4: Rule-based fallback (always guaranteed)
-        if not self.groq_available and not self.gemini_available and not self.ollama_available:
-            logger.info("No LLM available, using rule-based fallback")
+        # Tier 3: Rule-based engine (deterministik, always works)
+        if not self.groq_available and not self.ollama_available:
+            logger.info("No LLM available, using rule-based safety net")
         else:
-            logger.warning("All active LLM attempts failed, using rule-based fallback")
+            logger.warning("All LLM tiers failed, using rule-based safety net")
         return self._select_with_rules(situation, action_priorities)
     
     def _select_with_groq(self, situation: SituationReport,
                            action_priorities: list[dict] = None) -> ActionDecision:
         """
-        Primary LLM: Groq Cloud API (LPU ultra-fast inference).
+        Tier 1 (Cloud Brain): Groq Cloud API (LPU ultra-fast inference).
         
         Groq menggunakan chip LPU (Language Processing Unit) yang
-        mampu inferensi model 20B pada ~800 token/detik.
+        mampu inferensi model 20B pada ~800 token/detik. API format
+        kompatibel dengan OpenAI chat completions.
         
-        Menggunakan FULL PROMPT (mencakup data metrik lengkap,
-        SOP Runbook RAG, dan Experience Memory) agar keputusan
-        AI memiliki konteks pengetahuan penuh.
+        Menggunakan FULL prompt (_build_prompt) yang menyertakan:
+        - Data metrik Pandas (100% akurat)
+        - SOP Runbook dari RAG Knowledge Base
+        - Pengalaman masa lalu dari Experience Memory
+        - Prioritas aksi dari Scoring Engine
+        
+        response_format=json_object untuk paksa output JSON.
         """
-        # Gunakan prompt lengkap (termasuk RAG SOP Runbook dan Experience Memory)
-        prompt = self._build_prompt(situation, action_priorities)
+        # Gunakan FULL prompt (RAG + Memory) — Groq LPU cukup cepat
+        full_prompt = self._build_prompt(situation, action_priorities)
         
-        logger.info(f"Sending full prompt (with RAG & Memory) to Groq ({self.groq_model})...")
+        logger.info(f"Sending full prompt to Groq ({self.groq_model})...")
         
         for attempt in range(self.groq_retry_attempts):
             try:
@@ -392,7 +407,7 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
                         "model": self.groq_model,
                         "messages": [
                             {"role": "system", "content": self.SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt}
+                            {"role": "user", "content": full_prompt}
                         ],
                         "temperature": self.groq_temperature,
                         "max_tokens": self.groq_max_tokens,
@@ -431,18 +446,15 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
                 
                 response_data = json.loads(response_text)
                 
-                # Validasi dan konversi ke Pydantic model (membersihkan None dari parameters)
-                params_raw = response_data.get("parameters") or {}
-                cleaned_params = {k: v for k, v in params_raw.items() if v is not None}
-                
+                # Validasi dan konversi ke Pydantic model
                 decision = ActionDecision(
                     action=ActionType(response_data["action"]),
                     target_deployment=response_data.get("target_deployment", situation.pandas_metrics.target_pod),
                     target_namespace=response_data.get("target_namespace", "demo"),
-                    parameters=ActionParameters(**cleaned_params),
+                    parameters=ActionParameters(**response_data.get("parameters", {})),
                     confidence=float(response_data.get("confidence", 0.5)),
                     reasoning=response_data.get("reasoning", "No reasoning provided"),
-                    data_sources_used=response_data.get("data_sources_used", ["groq_cloud", "rag_knowledge_base"])
+                    data_sources_used=response_data.get("data_sources_used", ["groq_cloud"])
                 )
                 
                 logger.success(

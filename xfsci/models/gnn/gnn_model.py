@@ -68,11 +68,15 @@ class FallbackGATLayer(nn.Module):
         attn_dst = (h[dst] * self.a_dst).sum(dim=-1)
         attn = self.leaky_relu(attn_src + attn_dst)
         
-        # Softmax over edges
-        alpha = torch.softmax(attn, dim=0)
+        # Segmented Softmax over edges per destination node (dst)
+        # Menjamin total atensi masuk ke setiap node = 1.0
+        exp_attn = torch.exp(attn)
+        sum_exp = torch.zeros(N, self.heads, device=x.device)
+        sum_exp.index_add_(0, dst, exp_attn)
+        alpha = exp_attn / (sum_exp[dst] + 1e-12)
         alpha = self.dropout(alpha)
         
-        # Message passing
+        # Message passing: kumpulkan pesan dari source ke destination
         out = torch.zeros(N, self.heads, self.out_features, device=x.device)
         msg = h[src] * alpha.unsqueeze(-1)
         out.index_add_(0, dst, msg)

@@ -82,17 +82,20 @@ class GNNTrainer:
         }
 
     def _compute_class_weights(self) -> torch.Tensor:
-        """Menghitung inverse class frequency pada dataset train."""
+        """Menghitung smoothed square-root class weights untuk menyeimbangkan loss."""
         counts = np.zeros(len(LABEL_MAP), dtype=np.float32)
         for batch in self.train_loader:
             labels = batch.y.cpu().numpy()
             for l in labels:
                 counts[l] += 1
         
-        total = counts.sum()
-        # Inverse frequency dengan smoothing
-        weights = total / (len(counts) * np.maximum(counts, 1.0))
-        # Normalisasi
+        # Smoothed square-root inverse frequency
+        sqrt_counts = np.sqrt(np.maximum(counts, 1.0))
+        raw_weights = 1.0 / sqrt_counts
+        # Normalisasi sehingga rata-rata bobot = 1.0
+        weights = raw_weights / raw_weights.sum() * len(counts)
+        # Bounded clipping: cegah bobot terlalu timpang (antara 0.4 s/d 2.5)
+        weights = np.clip(weights, 0.4, 2.5)
         weights = weights / weights.sum() * len(counts)
         logger.info(f"Class weights node: { {IDX_TO_LABEL[i]: round(float(w), 3) for i, w in enumerate(weights)} }")
         return torch.tensor(weights, dtype=torch.float32)
@@ -171,7 +174,9 @@ class GNNTrainer:
         logger.info(f"Mulai pelatihan GNN: {epochs} epochs | Device: {self.device} | Early Stopping: {patience}")
         logger.info("=" * 60)
 
+        best_val_score = -1.0
         best_val_f1 = -1.0
+        best_val_acc = 0.0
         best_epoch = 0
         patience_counter = 0
         best_state = None
@@ -189,14 +194,15 @@ class GNNTrainer:
             self.history["train_node_loss"].append(train_node)
             self.history["train_graph_loss"].append(train_graph)
 
-            lr_curr = self.optimizer.param_groups[0]["lr"]
+            val_score = (val_acc + val_f1) / 2.0
 
-            if epoch % 5 == 0 or epoch == 1 or val_f1 > best_val_f1:
+            if epoch % 5 == 0 or epoch == 1 or val_score > best_val_score:
                 logger.info(f"Epoch {epoch:>3}/{epochs} | Train Loss: {train_loss:.4f} (Node: {train_node:.3f}, Graph: {train_graph:.3f}) | "
                             f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc*100:5.2f}% | Val F1: {val_f1*100:5.2f}% | LR: {lr_curr:.6f}")
 
-            # Checkpoint terbaik berdasarkan F1-Macro
-            if val_f1 > best_val_f1:
+            # Checkpoint terbaik berdasarkan skor komposit (Akurasi + Macro-F1)
+            if val_score > best_val_score:
+                best_val_score = val_score
                 best_val_f1 = val_f1
                 best_epoch = epoch
                 best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
@@ -204,7 +210,7 @@ class GNNTrainer:
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    logger.warning(f"Early stopping aktif pada epoch {epoch} (Best epoch: {best_epoch} dengan Val F1: {best_val_f1*100:.2f}%)")
+                    logger.warning(f"Early stopping aktif pada epoch {epoch} (Best epoch: {best_epoch} dengan Val Score: {best_val_score*100:.2f}%)")
                     break
 
         training_time = round(time.time() - start_time, 2)

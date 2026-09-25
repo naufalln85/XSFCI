@@ -174,7 +174,7 @@ ai_agent:
   groq:
     enabled: true
     api_key_env: "GROQ_API_KEY"         # export GROQ_API_KEY=gsk_xxx
-    model: "llama-3.1-8b-instant"       # 8B model, ~800 tok/s on Groq LPU
+    model: "openai/gpt-oss-20b"         # Official Groq recommendation, ~800 tok/s on Groq LPU
     temperature: 0.1
     max_tokens: 512
     timeout_seconds: 15                 # Groq biasanya < 1 detik

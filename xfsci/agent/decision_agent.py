@@ -161,7 +161,7 @@ PRIORITAS KEAMANAN:
             )
             return
         
-        self.groq_model = self.groq_config.get("model", "llama-3.1-8b-instant")
+        self.groq_model = self.groq_config.get("model", "openai/gpt-oss-20b")
         self.groq_timeout = self.groq_config.get("timeout_seconds", 15)
         self.groq_temperature = self.groq_config.get("temperature", 0.1)
         self.groq_max_tokens = self.groq_config.get("max_tokens", 512)

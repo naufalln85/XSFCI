@@ -52,7 +52,14 @@ from models.gnn.graph_dataset import (
     LABEL_MAP,
     IDX_TO_LABEL,
     NUM_SERVICES,
+    NORMALIZED_FEATURE_COLS,
 )
+
+# Indeks fitur kunci dalam vektor fitur node (sorted alphabetically)
+_sorted_features = sorted(NORMALIZED_FEATURE_COLS)
+IDX_ANOMALY_SCORE = _sorted_features.index("anomaly_score_raw_norm")  # 0
+IDX_CPU_USAGE = _sorted_features.index("cpu_usage_norm")              # 4
+IDX_POD_RESTARTS = _sorted_features.index("pod_restarts_norm")        # 15
 from models.gnn.gnn_model import DualHeadGATv2
 
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
@@ -164,8 +171,8 @@ class GNNTrainer:
         # Formula balanced class weights: total / (n_classes * count_c)
         weights = total_samples / (n_classes * counts)
         
-        # Bounded scaling (sweet spot: per-sample ratio ~6:1):
-        weights[0] = float(np.clip(weights[0], 0.20, 0.35))
+        # Bounded scaling — raise Normal floor to reduce false alarms:
+        weights[0] = float(np.clip(weights[0], 0.35, 0.50))
         for c in range(1, len(weights)):
             weights[c] = float(np.clip(weights[c], 1.0, 2.0))
             
@@ -272,9 +279,19 @@ class GNNTrainer:
                     true_fault_nodes = np.where(graph_y > 0)[0]
                     if len(true_fault_nodes) > 0:
                         total_anom_graphs += 1
-                        # Skor anomali tiap pod = 1.0 - P(NORMAL)
+                        # --- Hybrid RCA Scoring (GNN + Local Features) ---
+                        # GNN skor: 1.0 - P(NORMAL) — terkontaminasi oleh tetangga
                         graph_probs = node_probs[start_node:end_node].cpu().numpy()
-                        anomaly_scores = 1.0 - graph_probs[:, 0]
+                        gnn_scores = 1.0 - graph_probs[:, 0]
+                        # Fitur lokal mentah: langsung identifikasi pod bermasalah
+                        raw_x = batch.x[start_node:end_node].cpu().numpy()
+                        local_anomaly = raw_x[:, IDX_ANOMALY_SCORE]
+                        local_cpu = raw_x[:, IDX_CPU_USAGE]
+                        local_restart = raw_x[:, IDX_POD_RESTARTS]
+                        # Gabungan fitur lokal (weighted average)
+                        local_scores = 0.50 * local_anomaly + 0.30 * local_cpu + 0.20 * local_restart
+                        # Hybrid: 30% GNN + 70% lokal (mengatasi graph contamination)
+                        anomaly_scores = 0.30 * gnn_scores + 0.70 * local_scores
                         # Ranking pod dari skor anomali tertinggi
                         ranked_nodes = np.argsort(-anomaly_scores)
 
@@ -369,6 +386,20 @@ class GNNTrainer:
                 best_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
                 patience_counter = 0
                 is_best = True
+                # Real-time checkpoint save (aman dari SSH putus)
+                rt_ckpt = {
+                    "model_state_dict": {k: v.cpu() for k, v in self.model.state_dict().items()},
+                    "model_config": {
+                        "in_channels": self.model.in_channels,
+                        "hidden_dim": self.model.hidden_dim,
+                        "num_heads": self.model.num_heads,
+                        "num_classes": self.model.num_classes,
+                        "dropout": self.model.dropout_rate,
+                    },
+                    "best_epoch": epoch,
+                    "best_score": best_score,
+                }
+                torch.save(rt_ckpt, WEIGHTS_DIR / "gnn_best.pt")
             else:
                 patience_counter += 1
 

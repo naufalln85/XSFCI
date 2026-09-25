@@ -210,6 +210,13 @@ class DualHeadGATv2(nn.Module):
         """
         attn_weights = None
 
+        # --- DropEdge: reduce over-smoothing during training ---
+        # Randomly drop 20% of edges so nodes rely more on local features
+        if self.training:
+            num_edges = edge_index.size(1)
+            keep_mask = torch.rand(num_edges, device=edge_index.device) > 0.2
+            edge_index = edge_index[:, keep_mask]
+
         # --- Block 1 ---
         res1 = self.res_proj1(x)
         if PYG_AVAILABLE and return_attention:

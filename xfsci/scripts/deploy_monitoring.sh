@@ -84,6 +84,12 @@ if [ "$MODE" != "--loki-boutique" ] && [ "$MODE" != "--verify" ]; then
     if [ "$GRAFANA_READY" -gt 0 ] && [ "$PROM_READY" -gt 0 ] && [ "$MODE" != "--force" ]; then
         echo -e "  ✅ Prometheus & Grafana are already running and healthy! (Skipping to save time. Use --force to reinstall)"
     else
+        if [ "$MODE" == "--force" ]; then
+            echo -e "  Cleaning up any previous stuck Helm release..."
+            helm uninstall prometheus -n monitoring 2>/dev/null || true
+            kubectl delete job -n monitoring --all --force --grace-period=0 2>/dev/null || true
+            sleep 2
+        fi
         echo -e "  Installing/upgrading kube-prometheus-stack..."
         helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \

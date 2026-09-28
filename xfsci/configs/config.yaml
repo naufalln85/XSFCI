@@ -29,7 +29,7 @@ namespaces:
 # --- Monitoring (Layer 1) ---
 monitoring:
   prometheus:
-    url: "http://172.20.0.108:30090"  # NodePort (permanent, no port-forward needed)
+    url: "http://172.20.0.104:30090"  # NodePort (permanent, no port-forward needed)
     scrape_interval: "5s"       # Scrape setiap 5 detik
     retention: "7d"             # Simpan data 7 hari
     storage_size: "10Gi"
@@ -185,7 +185,7 @@ ai_agent:
   # Ollama Local Fallback (jika semua cloud gagal)
   ollama:
     enabled: true
-    base_url: "http://172.20.0.108:11434"  # Ollama di Master Node
+    base_url: "http://172.20.0.104:11434"  # Ollama di Master Node
     model: "qwen2.5:0.5b"              # Model ultra-ringan (~500MB RAM, 3-6s di CPU)
     timeout_seconds: 60                 # 0.5B cukup cepat, 60s sudah aman
     temperature: 0.1

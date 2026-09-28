@@ -47,7 +47,7 @@ fi
 echo -e "  ✅ Cluster OK"
 
 # Detect Master Node IP
-MASTER_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "172.20.0.108")
+MASTER_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "172.20.0.104")
 echo -e "  📍 Detected Cluster IP: ${GREEN}${MASTER_IP}${NC}"
 echo ""
 

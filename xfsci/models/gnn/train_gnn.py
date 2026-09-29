@@ -127,7 +127,9 @@ class GNNTrainer:
                  weight_decay: float = 1e-4,
                  gamma: float = 1.5,
                  label_smoothing: float = 0.05,
-                 graph_loss_weight: float = 0.3):
+                 graph_loss_weight: float = 0.3,
+                 fault_weight_cap: float = 2.0,
+                 epochs: int = 80):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -135,6 +137,7 @@ class GNNTrainer:
         self.device = device
         self.graph_loss_weight = graph_loss_weight
         self.label_smoothing = label_smoothing
+        self.fault_weight_cap = fault_weight_cap
 
         # Class weights untuk Weighted Cross-Entropy Loss
         self.class_weights = self._compute_class_weights().to(device)
@@ -145,7 +148,7 @@ class GNNTrainer:
         self.graph_criterion = nn.BCELoss()
 
         self.optimizer = AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
-        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=80, eta_min=1e-5)
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=epochs, eta_min=1e-5)
 
         self.history = {
             "train_loss": [], "val_loss": [],
@@ -182,7 +185,7 @@ class GNNTrainer:
         # Bounded scaling — raise Normal floor to reduce false alarms:
         weights[0] = float(np.clip(weights[0], 0.35, 0.50))
         for c in range(1, len(weights)):
-            weights[c] = float(np.clip(weights[c], 1.0, 2.0))
+            weights[c] = float(np.clip(weights[c], 1.0, self.fault_weight_cap))
             
         logger.info(f"Balanced Class Weights (CE Loss): { {IDX_TO_LABEL[i]: round(float(w), 3) for i, w in enumerate(weights)} }")
         return torch.tensor(weights, dtype=torch.float32)
@@ -540,6 +543,7 @@ def main():
     parser.add_argument("--gamma", type=float, default=1.5, help="Focal Loss gamma parameter (opsional)")
     parser.add_argument("--label-smoothing", type=float, default=0.05, help="Label smoothing (default: 0.05)")
     parser.add_argument("--graph-loss-weight", type=float, default=0.3, help="Graph loss weight (default: 0.3)")
+    parser.add_argument("--fault-weight-cap", type=float, default=2.0, help="Max class weight untuk kelas fault (default: 2.0, naikkan ke 4-8 untuk imbalanced data)")
     parser.add_argument("--device", type=str, default="auto", help="Device: cpu | cuda | auto")
     args = parser.parse_args()
 
@@ -571,7 +575,9 @@ def main():
         lr=args.lr,
         gamma=args.gamma,
         label_smoothing=args.label_smoothing,
-        graph_loss_weight=args.graph_loss_weight
+        graph_loss_weight=args.graph_loss_weight,
+        fault_weight_cap=args.fault_weight_cap,
+        epochs=args.epochs
     )
 
     metrics = trainer.run_training(epochs=args.epochs, patience=args.patience)

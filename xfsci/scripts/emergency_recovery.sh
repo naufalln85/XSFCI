@@ -14,7 +14,7 @@
 #   sudo ./scripts/emergency_recovery.sh
 # ============================================================
 
-set -e
+# set -e disabled: script handles errors internally to avoid aborting on non-fatal steps
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,7 +42,7 @@ echo "╚═══════════════════════�
 echo -e "${NC}"
 
 # ============================================================
-# STEP 0: Deteksi IP baru
+# STEP 0: Deteksi IP baru & Setup kubeconfig root
 # ============================================================
 log_step "STEP 0/7: Detecting Current Node IPs"
 
@@ -50,7 +50,6 @@ log_step "STEP 0/7: Detecting Current Node IPs"
 NEW_MASTER_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+\.\d+\.\d+\.\d+' | grep -v '127.0.0.1' | grep -v '^10\.96\.' | grep -v '^10\.244\.' | head -1)
 
 if [ -z "$NEW_MASTER_IP" ]; then
-    # Coba cara alternatif
     NEW_MASTER_IP=$(hostname -I | awk '{print $1}')
 fi
 
@@ -62,15 +61,37 @@ fi
 
 log_ok "Detected Master IP: ${GREEN}${NEW_MASTER_IP}${NC}"
 
-# Cek apakah ini benar-benar IP yang berubah
-OLD_IP_IN_KUBECONFIG=$(grep "server:" ~/.kube/config 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1 || echo "UNKNOWN")
+# ── Setup /root/.kube/config dari admin.conf ──────────────────
+# Script berjalan sebagai root (sudo), jadi KUBECONFIG = /root/.kube/config
+# Ini mungkin belum ada. Kita buat dari /etc/kubernetes/admin.conf
+ROOT_KUBECONFIG="/root/.kube/config"
+ADMIN_CONF="/etc/kubernetes/admin.conf"
+
+mkdir -p /root/.kube
+
+if [ ! -f "$ROOT_KUBECONFIG" ]; then
+    if [ -f "$ADMIN_CONF" ]; then
+        log_info "/root/.kube/config belum ada → menyalin dari admin.conf"
+        cp "$ADMIN_CONF" "$ROOT_KUBECONFIG"
+        log_ok "kubeconfig root dibuat dari admin.conf"
+    else
+        log_warn "admin.conf tidak ada! API server mungkin belum pernah di-init."
+    fi
+else
+    log_info "/root/.kube/config sudah ada"
+fi
+
+export KUBECONFIG="$ROOT_KUBECONFIG"
+
+# Update server URL di kubeconfig ke IP yang terdeteksi
+if [ -f "$ROOT_KUBECONFIG" ]; then
+    sed -i "s|server: https://[0-9.]\+:6443|server: https://${NEW_MASTER_IP}:6443|g" "$ROOT_KUBECONFIG" 2>/dev/null || true
+    log_ok "Server URL di kubeconfig di-update ke https://${NEW_MASTER_IP}:6443"
+fi
+
+OLD_IP_IN_KUBECONFIG=$(grep "server:" "$ROOT_KUBECONFIG" 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1 || echo "UNKNOWN")
 log_info "Old IP in kubeconfig: ${OLD_IP_IN_KUBECONFIG}"
 log_info "New detected IP: ${NEW_MASTER_IP}"
-
-if [ "$OLD_IP_IN_KUBECONFIG" == "$NEW_MASTER_IP" ]; then
-    log_warn "IP sama dengan kubeconfig. Mungkin masalah lain (bukan IP change)."
-    log_info "Cek: systemctl status kubelet / containerd"
-fi
 
 # ============================================================
 # STEP 1: Diagnosa cepat
@@ -112,57 +133,51 @@ fi
 log_ok "kubelet: $(systemctl is-active kubelet)"
 
 # ============================================================
-# STEP 3: Fix kubeconfig & API Server certificate
+# STEP 3: Fix API Server Certificate
 # ============================================================
-log_step "STEP 3/7: Fixing kubeconfig & API Server Certificate"
+log_step "STEP 3/7: Fixing API Server Certificate"
 
 if [ "$CLUSTER_REACHABLE" == "false" ]; then
-    log_info "Updating kubeconfig server URL ke IP baru: ${NEW_MASTER_IP}..."
 
-    # Backup kubeconfig lama
-    cp ~/.kube/config ~/.kube/config.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
-
-    # Update server URL di kubeconfig
-    sed -i "s|server: https://[0-9.]*:6443|server: https://${NEW_MASTER_IP}:6443|g" ~/.kube/config
-    log_ok "kubeconfig server URL updated"
-
-    # Cek apakah koneksi sudah berhasil dengan IP baru
+    # Coba dulu apakah kubeconfig yang sudah di-update cukup
+    log_info "Testing koneksi dengan kubeconfig yang sudah di-update..."
     if kubectl get nodes --request-timeout=5s > /dev/null 2>&1; then
-        log_ok "Koneksi berhasil dengan IP baru!"
+        log_ok "Koneksi berhasil dengan kubeconfig baru!"
         CLUSTER_REACHABLE=true
     else
-        log_warn "Masih tidak bisa terhubung. Perlu update API server certificate..."
-
-        # ============================================================
-        # FIX UTAMA: Regenerate API server certificate dengan SAN baru
-        # ============================================================
+        log_warn "Masih tidak bisa terhubung. Kemungkinan TLS cert SAN mismatch."
         log_info "Regenerating API server certificate dengan SAN ${NEW_MASTER_IP}..."
 
         # Backup certificate lama
-        sudo cp /etc/kubernetes/pki/apiserver.crt /etc/kubernetes/pki/apiserver.crt.bak 2>/dev/null || true
-        sudo cp /etc/kubernetes/pki/apiserver.key /etc/kubernetes/pki/apiserver.key.bak 2>/dev/null || true
+        cp /etc/kubernetes/pki/apiserver.crt /etc/kubernetes/pki/apiserver.crt.bak.$(date +%H%M%S) 2>/dev/null || true
+        cp /etc/kubernetes/pki/apiserver.key /etc/kubernetes/pki/apiserver.key.bak.$(date +%H%M%S) 2>/dev/null || true
 
         # Hapus certificate lama (akan di-regenerate oleh kubeadm)
-        sudo rm -f /etc/kubernetes/pki/apiserver.crt /etc/kubernetes/pki/apiserver.key
+        rm -f /etc/kubernetes/pki/apiserver.crt /etc/kubernetes/pki/apiserver.key
 
         # Regenerate menggunakan kubeadm
-        sudo kubeadm init phase certs apiserver \
+        kubeadm init phase certs apiserver \
             --apiserver-advertise-address="${NEW_MASTER_IP}" \
-            --apiserver-cert-extra-sans="${NEW_MASTER_IP},localhost,127.0.0.1"
+            --apiserver-cert-extra-sans="${NEW_MASTER_IP},localhost,127.0.0.1,kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster.local"
         log_ok "API server certificate regenerated dengan SAN: ${NEW_MASTER_IP}"
 
-        # Restart API server (static pod akan auto-restart setelah manifest diubah)
-        log_info "Restarting API server static pod..."
-        sudo crictl rm -f $(sudo crictl ps | grep kube-apiserver | awk '{print $1}') 2>/dev/null || true
-        sleep 10  # Tunggu API server restart
+        # Restart API server static pod
+        log_info "Restarting kube-apiserver static pod..."
+        APISERVER_CONTAINER=$(crictl ps 2>/dev/null | grep kube-apiserver | awk '{print $1}' | head -1)
+        if [ -n "$APISERVER_CONTAINER" ]; then
+            crictl rm -f "$APISERVER_CONTAINER" 2>/dev/null || true
+            log_info "API server container dihentikan, kubelet akan restart otomatis..."
+        else
+            log_warn "Tidak ada container apiserver yang running. Restart kubelet untuk memicu restart..."
+            systemctl restart kubelet
+        fi
+        sleep 20  # Tunggu API server restart
 
-        # Update kubeconfig admin
-        sudo kubeadm init phase kubeconfig admin \
+        # Refresh kubeconfig dari admin.conf yang baru
+        kubeadm init phase kubeconfig admin \
             --apiserver-advertise-address="${NEW_MASTER_IP}" 2>/dev/null || true
-        sudo cp /etc/kubernetes/admin.conf ~/.kube/config 2>/dev/null || true
-        sudo chown $(id -u):$(id -g) ~/.kube/config 2>/dev/null || true
-
-        log_ok "kubeconfig admin di-refresh"
+        cp /etc/kubernetes/admin.conf "$ROOT_KUBECONFIG"
+        log_ok "kubeconfig root di-refresh dari admin.conf baru"
         sleep 5
 
         # Test lagi
@@ -170,38 +185,53 @@ if [ "$CLUSTER_REACHABLE" == "false" ]; then
             log_ok "Koneksi berhasil setelah regenerate certificate!"
             CLUSTER_REACHABLE=true
         else
-            log_err "Masih tidak bisa connect. Coba STEP 3B: kubeadm full restart"
+            log_err "Masih tidak bisa connect. Lanjut ke STEP 3B..."
             CLUSTER_REACHABLE=false
         fi
     fi
 fi
 
 # ============================================================
-# STEP 3B: Jika masih gagal → restart semua control-plane pods
+# STEP 3B: Jika masih gagal → force restart semua control-plane
 # ============================================================
 if [ "$CLUSTER_REACHABLE" == "false" ]; then
-    log_step "STEP 3B/7: Force Restart Control-Plane Pods"
+    log_step "STEP 3B/7: Force Restart All Control-Plane Pods"
 
-    log_info "Menghentikan semua container control-plane..."
-    sudo crictl rm -f $(sudo crictl ps | grep -E "kube-apiserver|kube-controller|kube-scheduler|etcd" | awk '{print $1}') 2>/dev/null || true
-    
-    log_info "Menunggu static pods restart otomatis oleh kubelet (30s)..."
-    sleep 30
+    log_info "Menghentikan semua container control-plane (etcd, apiserver, controller, scheduler)..."
+    ALL_CP=$(crictl ps 2>/dev/null | grep -E "kube-apiserver|kube-controller|kube-scheduler|etcd" | awk '{print $1}')
+    if [ -n "$ALL_CP" ]; then
+        echo "$ALL_CP" | xargs -r crictl rm -f 2>/dev/null || true
+        log_ok "Control-plane containers dihentikan"
+    else
+        log_warn "Tidak ada container control-plane yang berjalan, mungkin sudah mati."
+    fi
+
+    log_info "Restart kubelet untuk memicu static pod respawn (menunggu 45s)..."
+    systemctl restart kubelet
+    sleep 45
 
     if kubectl get nodes --request-timeout=10s > /dev/null 2>&1; then
         log_ok "Control-plane berhasil restart!"
         CLUSTER_REACHABLE=true
     else
         log_err "Control-plane masih bermasalah."
-        log_warn "Coba jalankan manual:"
         echo ""
-        echo "    sudo systemctl restart kubelet"
-        echo "    sleep 30"
-        echo "    kubectl get nodes"
+        log_warn "🔧 LANGKAH MANUAL YANG HARUS DICOBA:"
         echo ""
-        echo "  Jika masih gagal, mungkin perlu kubeadm reset + re-init:"
-        echo "    sudo kubeadm reset --force"
-        echo "    sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=${NEW_MASTER_IP}"
+        echo "  1. Cek log kubelet:"
+        echo "       sudo journalctl -u kubelet -n 50 --no-pager"
+        echo ""
+        echo "  2. Cek static pod apiserver:"
+        echo "       sudo crictl ps -a | grep apiserver"
+        echo "       sudo crictl logs \$(sudo crictl ps -a | grep apiserver | awk '{print \$1}')"
+        echo ""
+        echo "  3. Lihat manifest:"
+        echo "       cat /etc/kubernetes/manifests/kube-apiserver.yaml | grep advertise"
+        echo ""
+        echo "  4. Jika semua gagal, reset cluster:"
+        echo "       sudo kubeadm reset --force"
+        echo "       sudo kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=${NEW_MASTER_IP}"
+        echo ""
         exit 1
     fi
 fi

@@ -151,7 +151,7 @@ CANONICAL_CALL_DEPENDENCIES: List[Tuple[str, str]] = [
     ("cartservice", "redis-cart"),
 ]
 
-# 18 Fitur ternormalisasi yang dihasilkan oleh feature_engineer.py
+# 21 Fitur ternormalisasi yang dihasilkan oleh feature_engineer.py (V2 SOTA)
 NORMALIZED_FEATURE_COLS: List[str] = [
     "cpu_usage_norm",
     "memory_usage_norm",
@@ -171,6 +171,10 @@ NORMALIZED_FEATURE_COLS: List[str] = [
     "net_total_bytes_norm",
     "net_rx_tx_ratio_norm",
     "anomaly_score_raw_norm",
+    # V2 SOTA: Fitur diskriminatif baru
+    "memory_slope_12_norm",   # Rolling OLS slope memory (leak detector)
+    "cpu_zscore_pod_norm",    # Per-pod Z-score CPU (baseline deviation)
+    "net_asymmetry_norm",     # |RX-TX|/(RX+TX) traffic asymmetry
 ]
 
 BASE_NUMERIC_COLS: List[str] = [
@@ -181,6 +185,8 @@ BASE_NUMERIC_COLS: List[str] = [
     "cpu_rolling_mean_5", "cpu_rolling_std_5", "mem_rolling_mean_5",
     "restart_delta", "net_total_bytes", "net_rx_tx_ratio",
     "anomaly_score_raw",
+    # V2 SOTA
+    "memory_slope_12", "cpu_zscore_pod", "net_asymmetry",
 ]
 
 

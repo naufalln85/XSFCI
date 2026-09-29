@@ -1,6 +1,6 @@
 """
 ============================================================
-XFSCI GNN Architecture - Layer 2: Cloud Intelligence
+XFSCI GNN Architecture - Layer 2: Cloud Intelligence (V2 - 21 Features)
 ============================================================
 Arsitektur Dual-Head GATv2 (Graph Attention Network v2)
 untuk deteksi anomali dan lokalisasi akar masalah microservice:
@@ -104,7 +104,7 @@ class DualHeadGATv2(nn.Module):
     """
 
     def __init__(self,
-                 in_channels: int = 18,
+                 in_channels: int = 21,
                  hidden_dim: int = 32,
                  num_heads: int = 4,
                  num_classes: int = 5,
@@ -290,11 +290,11 @@ class DualHeadGATv2(nn.Module):
 
 
 if __name__ == "__main__":
-    logger.info("Testing DualHeadGATv2 model...")
-    model = DualHeadGATv2(in_channels=18, hidden_dim=32, num_heads=4, num_classes=5)
+    logger.info("Testing DualHeadGATv2 model (V2: 21 features)...")
+    model = DualHeadGATv2(in_channels=21, hidden_dim=32, num_heads=4, num_classes=5)
     
-    # Dummy single graph test (11 nodes, 18 features)
-    dummy_x = torch.randn(11, 18)
+    # Dummy single graph test (11 nodes, 21 features)
+    dummy_x = torch.randn(11, 21)
     dummy_edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]], dtype=torch.long)
     
     node_out, graph_out, _ = model(dummy_x, dummy_edge_index)

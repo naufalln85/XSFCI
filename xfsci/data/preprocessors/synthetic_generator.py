@@ -1,16 +1,23 @@
 """
 ============================================================
-XFSCI Synthetic Data Generator V2 - Physics-Based Augmentation
+XFSCI Synthetic Data Generator V3 - Graph-Aware Augmentation
 ============================================================
 Generator sintetis CANGGIH yang menghasilkan data anomali
-dengan variasi realistis berdasarkan model fisika sistem:
+dengan variasi realistis berdasarkan model fisika sistem.
 
-Peningkatan dari V1:
+V3 Improvements (Critical fix for RCA accuracy):
+  - Graph-Aware: setiap timestep menghasilkan 11 baris (1 per pod)
+    dengan hanya pod target yang diberi label fault
+  - Pod yang tidak terkena fault diberi metrik NORMAL yang realistis
+  - Ini memastikan model GNN belajar membedakan pod fault vs pod sehat
+    dalam konteks graf yang sama (bukan menyebar fault ke semua pod)
+
+Peningkatan dari V2:
   1. Multi-intensitas per fault (ringan/sedang/berat)
   2. Kurva transisi temporal (onset -> peak -> recovery)
   3. Korelasi cross-metric (CPU naik -> latency naik -> error naik)
   4. Concurrent fault (CPU+Network, Memory+Crash, dll.)
-  5. Distribusi ke semua pod (bukan hanya pod tertentu)
+  5. HANYA pod target yang diberi fault, pod lain NORMAL
   6. Time-series windowing untuk LSTM training
 
 Target output: ~50.000 baris data berkualitas tinggi.
@@ -56,6 +63,20 @@ ALL_PODS = [
     "checkoutservice", "currencyservice", "emailservice", "shippingservice",
     "adservice", "recommendationservice", "paymentservice",
 ]
+
+# Pod penempatan per worker node (sesuai setup_cluster.sh)
+WORKER1_PODS = ["frontend", "loadgenerator", "recommendationservice", "paymentservice"]
+WORKER2_PODS = ["adservice", "cartservice", "productcatalogservice", "redis-cart"]
+WORKER3_PODS = ["checkoutservice", "currencyservice", "emailservice", "shippingservice"]
+POD_CRASH_TARGETS = ["frontend", "cartservice", "recommendationservice", "paymentservice"]
+
+# Pod target per fault type (sesuai fault injection scenario)
+FAULT_TARGET_PODS = {
+    "FAULT_CPU_STRESS":      WORKER2_PODS,
+    "FAULT_MEMORY_LEAK":     WORKER2_PODS,
+    "FAULT_POD_CRASH":       POD_CRASH_TARGETS,
+    "FAULT_NETWORK_LATENCY": WORKER3_PODS,
+}
 
 # Seed for reproducibility
 np.random.seed(42)
@@ -151,20 +172,28 @@ INTENSITY_PROFILES = {
 }
 
 
-class PhysicsBasedGenerator:
+class GraphAwareGenerator:
     """
-    Generator sintetis berbasis model fisika sistem.
-    Menghasilkan data dengan:
-    - Multi-intensitas (ringan/sedang/berat)
-    - Kurva transisi temporal (onset -> peak -> recovery)
-    - Korelasi cross-metric yang realistis
-    - Concurrent fault support
+    V3: Graph-Aware Synthetic Generator.
+    
+    KUNCI PERBEDAAN dari V2:
+    Generator ini menghasilkan FULL GRAPH SNAPSHOTS per timestep,
+    dimana setiap timestep berisi 11 baris (1 per pod microservice).
+    
+    Hanya pod TARGET yang diberi label fault dan metrik anomali.
+    Pod lainnya (7-8 pod) diberi label NORMAL dengan metrik baseline.
+    
+    Ini memastikan model GNN belajar membedakan pod bermasalah
+    dari pod sehat dalam konteks graf yang sama — bukan memperlakukan
+    semua pod sebagai fault yang merupakan bug utama di V2.
     """
 
     def __init__(self, target_per_class: int = 5000, noise_factor: float = 0.10):
         self.target_per_class = target_per_class
         self.noise_factor = noise_factor
         self.stats_per_label = {}
+        # Cache pod names dari data real
+        self._pod_names_map = {}
 
     def compute_label_stats(self, df: pd.DataFrame):
         """Hitung statistik dari data real sebagai baseline."""
@@ -178,6 +207,28 @@ class PhysicsBasedGenerator:
                 "count": len(subset),
             }
             logger.info(f"  {label}: {len(subset):,} real rows")
+        
+        # Cache pod names: service -> full pod name
+        if "pod_name" in df.columns:
+            for _, row in df.drop_duplicates("pod_name").iterrows():
+                pod_name = row["pod_name"]
+                parts = pod_name.split("-")
+                if len(parts) >= 3:
+                    svc = "-".join(parts[:-2])
+                else:
+                    svc = pod_name
+                if svc not in self._pod_names_map:
+                    self._pod_names_map[svc] = pod_name
+
+    def _get_pod_full_name(self, service: str) -> str:
+        """Dapatkan full pod name untuk service, generate jika belum ada."""
+        if service in self._pod_names_map:
+            return self._pod_names_map[service]
+        # Generate realistic pod name
+        suffix = f"{np.random.randint(1000,9999)}-{''.join(np.random.choice(list('abcdefghijklmnop0123456789'), 5))}"
+        name = f"{service}-{suffix}"
+        self._pod_names_map[service] = name
+        return name
 
     # ============================================================
     # TEMPORAL CURVE GENERATORS
@@ -189,9 +240,6 @@ class PhysicsBasedGenerator:
         """
         Membuat kurva transisi realistis: onset -> peak -> recovery.
         Mengembalikan array 0.0 -> 1.0 -> 0.0 sepanjang n titik.
-
-        Ini KRITIS untuk LSTM karena model perlu belajar
-        mengenali TRANSISI, bukan hanya titik-titik anomali acak.
         """
         n_onset = max(1, int(n * onset_frac))
         n_peak = max(1, int(n * peak_frac))
@@ -206,7 +254,6 @@ class PhysicsBasedGenerator:
         recovery = np.exp(-np.linspace(0, 4, n_recovery))
 
         curve = np.concatenate([onset, peak, recovery])
-        # Pastikan panjang tepat n
         if len(curve) > n:
             curve = curve[:n]
         elif len(curve) < n:
@@ -214,8 +261,8 @@ class PhysicsBasedGenerator:
 
         return curve
 
-    def _generate_base_normal(self, n: int) -> dict:
-        """Generate baseline metrik normal."""
+    def _generate_normal_metrics(self, n: int) -> dict:
+        """Generate baseline metrik normal untuk satu pod."""
         stats = self.stats_per_label.get("NORMAL", {})
         rows = {}
         for col in NUMERIC_COLS:
@@ -223,7 +270,6 @@ class PhysicsBasedGenerator:
                 mean = stats["mean"][col]
                 std = max(stats["std"][col], abs(mean) * 0.05)
             else:
-                # Fallback defaults
                 defaults = {
                     "cpu_usage": 0.05, "memory_usage": 50*1024**2,
                     "memory_usage_percent": 15, "pod_restarts": 0,
@@ -244,361 +290,374 @@ class PhysicsBasedGenerator:
     # FAULT-SPECIFIC GENERATORS (Multi-Intensity)
     # ============================================================
 
-    def generate_cpu_stress(self, n: int) -> pd.DataFrame:
-        """
-        Generate CPU stress data dengan 3 intensitas berbeda.
-        Setiap intensitas menghasilkan pola CPU yang berbeda,
-        lengkap dengan kurva onset-peak-recovery.
-        """
+    def _generate_fault_metrics_cpu_stress(self, n: int) -> dict:
+        """Generate metrik CPU stress untuk pod target."""
         profiles = INTENSITY_PROFILES["FAULT_CPU_STRESS"]
-        all_rows = []
+        # Pick random intensity
+        intensities = list(profiles.keys())
+        weights = [profiles[k]["weight"] for k in intensities]
+        chosen = np.random.choice(intensities, p=weights)
+        profile = profiles[chosen]
 
-        for intensity_name, profile in profiles.items():
-            n_this = int(n * profile["weight"])
-            if n_this == 0:
-                continue
-
-            base = self._generate_base_normal(n_this)
-            curve = self._onset_peak_recovery_curve(n_this)
-
-            cpu_min, cpu_max = profile["cpu_range"]
-            cpu_range = cpu_max - cpu_min
-            base["cpu_usage"] = cpu_min + curve * cpu_range
-            # Tambahkan noise realistis
-            base["cpu_usage"] += np.random.normal(0, cpu_range * 0.08, n_this)
-            base["cpu_usage"] = np.clip(base["cpu_usage"], 0.01, 4.0)
-
-            # Cross-metric correlation: CPU tinggi -> memory sedikit naik
-            mem_min, mem_max = profile["memory_pct_range"]
-            base["memory_usage_percent"] = np.random.uniform(mem_min, mem_max, n_this)
-            base["memory_usage"] = base["memory_usage_percent"] / 100 * 4 * 1024**3
-
-            # CPU tinggi -> error rate sedikit naik
-            base["error_rate"] = np.clip(
-                base["error_rate"] + curve * profile["error_boost"],
-                0, 1
-            )
-
-            # CPU tinggi -> request rate turun (resource contention)
-            base["request_rate"] = np.clip(
-                base["request_rate"] * (1 - curve * 0.2), 0, None
-            )
-
-            df_part = pd.DataFrame(base)
-            df_part["label"] = "FAULT_CPU_STRESS"
-            df_part["_intensity"] = intensity_name
-            all_rows.append(df_part)
-
-        return pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
-
-    def generate_memory_leak(self, n: int) -> pd.DataFrame:
-        """
-        Generate memory leak dengan 3 kecepatan berbeda.
-        Mensimulasikan ramp-up gradual yang realistis.
-        """
-        profiles = INTENSITY_PROFILES["FAULT_MEMORY_LEAK"]
-        all_rows = []
-
-        for intensity_name, profile in profiles.items():
-            n_this = int(n * profile["weight"])
-            if n_this == 0:
-                continue
-
-            base = self._generate_base_normal(n_this)
-
-            # Ramp-up memory: base -> peak (linear + noise)
-            base_bytes = profile["base_mb"] * 1024**2
-            peak_bytes = profile["peak_mb"] * 1024**2
-
-            # Kurva ramp-up non-linear (exponential growth, lebih realistis)
-            t = np.linspace(0, 1, n_this)
-            growth = base_bytes + (peak_bytes - base_bytes) * (t ** 1.5)
-            noise = np.random.normal(0, (peak_bytes - base_bytes) * 0.03, n_this)
-            base["memory_usage"] = np.clip(growth + noise, 0, 2 * 1024**3)
-            base["memory_usage_percent"] = base["memory_usage"] / (4 * 1024**3) * 100
-
-            # Cross-metric: memory leak -> CPU sedikit naik (GC pressure)
-            gc_pressure = np.clip(t * 0.15, 0, 0.3)
-            base["cpu_usage"] = base["cpu_usage"] + gc_pressure
-
-            # OOM crash simulation: di akhir kurva, tiba-tiba drop
-            if np.random.random() < profile["oom_probability"]:
-                crash_point = int(n_this * np.random.uniform(0.7, 0.95))
-                base["memory_usage"][crash_point:] = base_bytes * 0.5
-                base["memory_usage_percent"][crash_point:] = base_bytes * 0.5 / (4 * 1024**3) * 100
-                base["pod_restarts"][crash_point:] = np.arange(1, n_this - crash_point + 1).clip(0, 5)
-
-            df_part = pd.DataFrame(base)
-            df_part["label"] = "FAULT_MEMORY_LEAK"
-            df_part["_intensity"] = intensity_name
-            all_rows.append(df_part)
-
-        return pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
-
-    def generate_pod_crash(self, n: int) -> pd.DataFrame:
-        """
-        Generate pod crash dengan variasi severity.
-        Single crash vs repeated crash vs cascading crash.
-        """
-        profiles = INTENSITY_PROFILES["FAULT_POD_CRASH"]
-        all_rows = []
-
-        for intensity_name, profile in profiles.items():
-            n_this = int(n * profile["weight"])
-            if n_this == 0:
-                continue
-
-            base = self._generate_base_normal(n_this)
-
-            # Restart count
-            r_min, r_max = profile["restart_range"]
-            restarts = np.random.randint(r_min, r_max + 1, n_this)
-            # Buat pola step-wise (restart naik bertahap)
-            restarts = np.sort(restarts)
-            base["pod_restarts"] = restarts.astype(float)
-
-            # Downtime: traffic drop saat pod mati
-            downtime_mask = np.random.random(n_this) < profile["downtime_fraction"]
-            traffic_factor = np.where(downtime_mask, np.random.uniform(0.02, 0.2, n_this), 1.0)
-            base["net_rx_bytes"] = base["net_rx_bytes"] * traffic_factor
-            base["net_tx_bytes"] = base["net_tx_bytes"] * traffic_factor
-            base["request_rate"] = base["request_rate"] * traffic_factor
-
-            # CPU spike saat restart (init containers loading)
-            restart_spike = np.where(downtime_mask, np.random.uniform(0.3, 0.8, n_this), 0)
-            base["cpu_usage"] = base["cpu_usage"] + restart_spike
-
-            # Error rate naik saat crash
-            base["error_rate"] = np.where(
-                downtime_mask,
-                np.random.uniform(0.1, 0.5, n_this),
-                base["error_rate"]
-            )
-
-            df_part = pd.DataFrame(base)
-            df_part["label"] = "FAULT_POD_CRASH"
-            df_part["_intensity"] = intensity_name
-            all_rows.append(df_part)
-
-        return pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
-
-    def generate_network_latency(self, n: int) -> pd.DataFrame:
-        """
-        Generate network latency dengan 3 level severity.
-        """
-        profiles = INTENSITY_PROFILES["FAULT_NETWORK_LATENCY"]
-        all_rows = []
-
-        for intensity_name, profile in profiles.items():
-            n_this = int(n * profile["weight"])
-            if n_this == 0:
-                continue
-
-            base = self._generate_base_normal(n_this)
-            curve = self._onset_peak_recovery_curve(n_this)
-
-            # Net traffic naik karena retransmisi TCP
-            multiplier = profile["traffic_multiplier"]
-            base["net_rx_bytes"] = base["net_rx_bytes"] * (1 + curve * (multiplier - 1))
-            base["net_tx_bytes"] = base["net_tx_bytes"] * (1 + curve * (multiplier - 1))
-
-            # Jitter: variabilitas tinggi di traffic
-            jitter = np.random.normal(0, profile["jitter_ms"] * 10, n_this)
-            base["net_rx_bytes"] = np.abs(base["net_rx_bytes"] + jitter)
-
-            # Packet loss -> error rate naik
-            loss_factor = profile["packet_loss_pct"] / 100
-            base["error_rate"] = np.clip(
-                base["error_rate"] + curve * loss_factor * 0.5,
-                0, 1
-            )
-
-            # Latency tinggi -> request rate turun (timeout)
-            latency_impact = profile["latency_ms"] / 1000
-            base["request_rate"] = np.clip(
-                base["request_rate"] * (1 - curve * min(latency_impact, 0.6)),
-                0, None
-            )
-
-            df_part = pd.DataFrame(base)
-            df_part["label"] = "FAULT_NETWORK_LATENCY"
-            df_part["_intensity"] = intensity_name
-            all_rows.append(df_part)
-
-        return pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
-
-    def generate_normal(self, n: int) -> pd.DataFrame:
-        """Generate data normal dengan variasi waktu realistis."""
-        base = self._generate_base_normal(n)
-        base["pod_restarts"] = np.zeros(n)
-        # Tambahkan pola diurnal (CPU naik sedikit di jam sibuk)
-        diurnal = 1 + 0.15 * np.sin(np.linspace(0, 4 * np.pi, n))
-        base["cpu_usage"] = base["cpu_usage"] * diurnal
-        base["request_rate"] = base["request_rate"] * diurnal
-
-        df = pd.DataFrame(base)
-        df["label"] = "NORMAL"
-        df["_intensity"] = "baseline"
-        return df
-
-    # ============================================================
-    # CONCURRENT FAULT GENERATORS
-    # ============================================================
-
-    def generate_concurrent_cpu_network(self, n: int) -> pd.DataFrame:
-        """CPU stress + Network latency bersamaan."""
-        base = self._generate_base_normal(n)
+        base = self._generate_normal_metrics(n)
         curve = self._onset_peak_recovery_curve(n)
 
-        # CPU stress sedang
-        base["cpu_usage"] = 0.5 + curve * 1.0
-        base["cpu_usage"] += np.random.normal(0, 0.1, n)
+        cpu_min, cpu_max = profile["cpu_range"]
+        cpu_range = cpu_max - cpu_min
+        base["cpu_usage"] = cpu_min + curve * cpu_range
+        base["cpu_usage"] += np.random.normal(0, cpu_range * 0.08, n)
+        base["cpu_usage"] = np.clip(base["cpu_usage"], 0.01, 4.0)
 
-        # Network latency sedang
-        base["net_rx_bytes"] = base["net_rx_bytes"] * (1 + curve * 1.5)
-        base["net_tx_bytes"] = base["net_tx_bytes"] * (1 + curve * 1.2)
+        mem_min, mem_max = profile["memory_pct_range"]
+        base["memory_usage_percent"] = np.random.uniform(mem_min, mem_max, n)
+        base["memory_usage"] = base["memory_usage_percent"] / 100 * 4 * 1024**3
 
-        # Combined effect: error rate lebih tinggi dari single fault
-        base["error_rate"] = np.clip(curve * 0.12, 0, 0.5)
+        base["error_rate"] = np.clip(
+            base["error_rate"] + curve * profile["error_boost"], 0, 1
+        )
+        base["request_rate"] = np.clip(
+            base["request_rate"] * (1 - curve * 0.2), 0, None
+        )
+        return base
 
-        # Request rate turun signifikan
-        base["request_rate"] = base["request_rate"] * (1 - curve * 0.4)
+    def _generate_fault_metrics_memory_leak(self, n: int) -> dict:
+        """Generate metrik memory leak untuk pod target."""
+        profiles = INTENSITY_PROFILES["FAULT_MEMORY_LEAK"]
+        intensities = list(profiles.keys())
+        weights = [profiles[k]["weight"] for k in intensities]
+        chosen = np.random.choice(intensities, p=weights)
+        profile = profiles[chosen]
 
-        df = pd.DataFrame(base)
-        df["label"] = "FAULT_CPU_STRESS"  # Label dominan
-        df["_intensity"] = "concurrent_cpu_net"
-        return df
+        base = self._generate_normal_metrics(n)
+        base_bytes = profile["base_mb"] * 1024**2
+        peak_bytes = profile["peak_mb"] * 1024**2
 
-    def generate_concurrent_memory_crash(self, n: int) -> pd.DataFrame:
-        """Memory leak yang berujung OOM crash."""
-        base = self._generate_base_normal(n)
-
-        # Memory ramp-up
         t = np.linspace(0, 1, n)
-        base["memory_usage"] = 256 * 1024**2 + t * 768 * 1024**2
+        growth = base_bytes + (peak_bytes - base_bytes) * (t ** 1.5)
+        noise = np.random.normal(0, (peak_bytes - base_bytes) * 0.03, n)
+        base["memory_usage"] = np.clip(growth + noise, 0, 2 * 1024**3)
         base["memory_usage_percent"] = base["memory_usage"] / (4 * 1024**3) * 100
 
-        # OOM crash di 70% perjalanan
-        crash_point = int(n * 0.7)
-        base["pod_restarts"][:crash_point] = 0
-        base["pod_restarts"][crash_point:] = np.arange(1, n - crash_point + 1).clip(0, 5).astype(float)
+        gc_pressure = np.clip(t * 0.15, 0, 0.3)
+        base["cpu_usage"] = base["cpu_usage"] + gc_pressure
 
-        # Setelah crash: memory reset, CPU spike dari restart
-        base["memory_usage"][crash_point:] = 100 * 1024**2
-        base["memory_usage_percent"][crash_point:] = 100 * 1024**2 / (4 * 1024**3) * 100
-        base["cpu_usage"][crash_point:crash_point+int(n*0.1)] = np.random.uniform(0.3, 0.6, min(int(n*0.1), n - crash_point))
+        if np.random.random() < profile["oom_probability"]:
+            crash_point = int(n * np.random.uniform(0.7, 0.95))
+            base["memory_usage"][crash_point:] = base_bytes * 0.5
+            base["memory_usage_percent"][crash_point:] = base_bytes * 0.5 / (4 * 1024**3) * 100
+            base["pod_restarts"][crash_point:] = np.arange(1, n - crash_point + 1).clip(0, 5)
 
-        # Error spike saat crash
-        base["error_rate"][crash_point:crash_point+int(n*0.05)] = np.random.uniform(0.2, 0.8, min(int(n*0.05), n - crash_point))
+        return base
 
-        df = pd.DataFrame(base)
-        # Bagian awal = memory leak, bagian akhir = pod crash
-        df["label"] = "FAULT_MEMORY_LEAK"
-        df.loc[crash_point:, "label"] = "FAULT_POD_CRASH"
-        df["_intensity"] = "concurrent_mem_crash"
-        return df
+    def _generate_fault_metrics_pod_crash(self, n: int) -> dict:
+        """Generate metrik pod crash untuk pod target."""
+        profiles = INTENSITY_PROFILES["FAULT_POD_CRASH"]
+        intensities = list(profiles.keys())
+        weights = [profiles[k]["weight"] for k in intensities]
+        chosen = np.random.choice(intensities, p=weights)
+        profile = profiles[chosen]
 
-    # ============================================================
-    # METADATA & ASSEMBLY
-    # ============================================================
+        base = self._generate_normal_metrics(n)
 
-    def _add_metadata(self, df: pd.DataFrame, real_df: pd.DataFrame) -> pd.DataFrame:
-        """Tambahkan timestamp, pod_name, pod_service realistis."""
-        n = len(df)
+        r_min, r_max = profile["restart_range"]
+        restarts = np.random.randint(r_min, r_max + 1, n)
+        restarts = np.sort(restarts)
+        base["pod_restarts"] = restarts.astype(float)
 
-        # Distribusikan ke semua pod (bukan hanya pod dari label tertentu)
-        all_pods = real_df["pod_name"].unique()
-        if len(all_pods) == 0:
-            all_pods = [f"{p}-{np.random.randint(1000,9999)}-{np.random.choice(list('abcdef'))}{np.random.choice(list('abcdef'))}{np.random.choice(list('0123456789'))}{np.random.choice(list('0123456789'))}{np.random.choice(list('abcdef'))}"
-                        for p in ALL_PODS]
-        df["pod_name"] = np.random.choice(all_pods, n)
-        df["pod_service"] = df["pod_name"].apply(
-            lambda x: "-".join(x.split("-")[:-2]) if len(x.split("-")) >= 3 else x
+        downtime_mask = np.random.random(n) < profile["downtime_fraction"]
+        traffic_factor = np.where(downtime_mask, np.random.uniform(0.02, 0.2, n), 1.0)
+        base["net_rx_bytes"] = base["net_rx_bytes"] * traffic_factor
+        base["net_tx_bytes"] = base["net_tx_bytes"] * traffic_factor
+        base["request_rate"] = base["request_rate"] * traffic_factor
+
+        restart_spike = np.where(downtime_mask, np.random.uniform(0.3, 0.8, n), 0)
+        base["cpu_usage"] = base["cpu_usage"] + restart_spike
+
+        base["error_rate"] = np.where(
+            downtime_mask,
+            np.random.uniform(0.1, 0.5, n),
+            base["error_rate"]
         )
+        return base
 
-        # Timestamps: beberapa batch di waktu berbeda
-        n_batches = max(1, n // 500)
-        timestamps = []
-        for batch_i in range(n_batches):
-            batch_size = n // n_batches if batch_i < n_batches - 1 else n - len(timestamps)
-            # Spread across different "hours"
-            base_time = datetime.utcnow() - timedelta(hours=np.random.randint(1, 24))
-            batch_ts = [base_time + timedelta(seconds=j * 5) for j in range(batch_size)]
-            timestamps.extend(batch_ts)
+    def _generate_fault_metrics_network_latency(self, n: int) -> dict:
+        """Generate metrik network latency untuk pod target."""
+        profiles = INTENSITY_PROFILES["FAULT_NETWORK_LATENCY"]
+        intensities = list(profiles.keys())
+        weights = [profiles[k]["weight"] for k in intensities]
+        chosen = np.random.choice(intensities, p=weights)
+        profile = profiles[chosen]
 
-        df["timestamp"] = timestamps[:n]
+        base = self._generate_normal_metrics(n)
+        curve = self._onset_peak_recovery_curve(n)
+
+        multiplier = profile["traffic_multiplier"]
+        base["net_rx_bytes"] = base["net_rx_bytes"] * (1 + curve * (multiplier - 1))
+        base["net_tx_bytes"] = base["net_tx_bytes"] * (1 + curve * (multiplier - 1))
+
+        jitter = np.random.normal(0, profile["jitter_ms"] * 10, n)
+        base["net_rx_bytes"] = np.abs(base["net_rx_bytes"] + jitter)
+
+        loss_factor = profile["packet_loss_pct"] / 100
+        base["error_rate"] = np.clip(
+            base["error_rate"] + curve * loss_factor * 0.5, 0, 1
+        )
+        base["request_rate"] = np.clip(
+            base["request_rate"] * (1 - curve * min(profile["latency_ms"] / 1000, 0.6)),
+            0, None
+        )
+        return base
+
+    # ============================================================
+    # GRAPH-AWARE SNAPSHOT GENERATOR (V3 Core Innovation)
+    # ============================================================
+
+    def generate_graph_snapshots(self, fault_label: str, n_timesteps: int) -> pd.DataFrame:
+        """
+        V3 CORE: Generate complete graph snapshots untuk satu jenis fault.
+        
+        Setiap timestep menghasilkan 11 baris (1 per microservice pod):
+        - Pod TARGET (3-4 pods): diberi label fault + metrik anomali
+        - Pod LAINNYA (7-8 pods): diberi label NORMAL + metrik baseline
+        
+        Args:
+            fault_label: salah satu dari FAULT_LABELS
+            n_timesteps: jumlah timestep yang dihasilkan
+            
+        Returns:
+            DataFrame dengan n_timesteps * 11 baris
+        """
+        target_pods = FAULT_TARGET_PODS.get(fault_label, [])
+        if not target_pods:
+            # NORMAL: semua pod diberi metrik normal
+            return self._generate_normal_snapshots(n_timesteps)
+
+        # Pilih fault metric generator
+        fault_generators = {
+            "FAULT_CPU_STRESS":      self._generate_fault_metrics_cpu_stress,
+            "FAULT_MEMORY_LEAK":     self._generate_fault_metrics_memory_leak,
+            "FAULT_POD_CRASH":       self._generate_fault_metrics_pod_crash,
+            "FAULT_NETWORK_LATENCY": self._generate_fault_metrics_network_latency,
+        }
+        fault_gen = fault_generators[fault_label]
+
+        all_rows = []
+        # Generate base timestamp sequence
+        base_time = datetime.utcnow() - timedelta(hours=np.random.randint(1, 48))
+
+        for pod_svc in ALL_PODS:
+            pod_name = self._get_pod_full_name(pod_svc)
+            is_target = pod_svc in target_pods
+
+            if is_target:
+                # Pod target: metrik fault + label fault
+                metrics = fault_gen(n_timesteps)
+                label = fault_label
+            else:
+                # Pod bukan target: metrik normal + label NORMAL
+                metrics = self._generate_normal_metrics(n_timesteps)
+                label = "NORMAL"
+
+            timestamps = [base_time + timedelta(seconds=j * 5) for j in range(n_timesteps)]
+
+            pod_df = pd.DataFrame(metrics)
+            pod_df["timestamp"] = timestamps
+            pod_df["pod_name"] = pod_name
+            pod_df["pod_service"] = pod_svc
+            pod_df["label"] = label
+            pod_df["is_synthetic"] = True
+            all_rows.append(pod_df)
+
+        result = pd.concat(all_rows, ignore_index=True)
+        result = result.sort_values(["timestamp", "pod_name"]).reset_index(drop=True)
 
         # Reorder columns
-        cols = ["timestamp", "pod_name"] + NUMERIC_COLS + ["label", "pod_service"]
-        extra = [c for c in df.columns if c not in cols and c != "_intensity"]
-        df = df[cols + extra].copy()
+        cols = ["timestamp", "pod_name"] + NUMERIC_COLS + ["label", "pod_service", "is_synthetic"]
+        extra = [c for c in result.columns if c not in cols]
+        result = result[cols + extra].copy()
 
-        return df
+        return result
+
+    def _generate_normal_snapshots(self, n_timesteps: int) -> pd.DataFrame:
+        """Generate complete normal graph snapshots."""
+        all_rows = []
+        base_time = datetime.utcnow() - timedelta(hours=np.random.randint(1, 48))
+
+        for pod_svc in ALL_PODS:
+            pod_name = self._get_pod_full_name(pod_svc)
+            metrics = self._generate_normal_metrics(n_timesteps)
+
+            # Diurnal pattern
+            diurnal = 1 + 0.15 * np.sin(np.linspace(0, 4 * np.pi, n_timesteps))
+            metrics["cpu_usage"] = metrics["cpu_usage"] * diurnal
+            metrics["request_rate"] = metrics["request_rate"] * diurnal
+
+            timestamps = [base_time + timedelta(seconds=j * 5) for j in range(n_timesteps)]
+            pod_df = pd.DataFrame(metrics)
+            pod_df["timestamp"] = timestamps
+            pod_df["pod_name"] = pod_name
+            pod_df["pod_service"] = pod_svc
+            pod_df["label"] = "NORMAL"
+            pod_df["is_synthetic"] = True
+            all_rows.append(pod_df)
+
+        result = pd.concat(all_rows, ignore_index=True)
+        result = result.sort_values(["timestamp", "pod_name"]).reset_index(drop=True)
+
+        cols = ["timestamp", "pod_name"] + NUMERIC_COLS + ["label", "pod_service", "is_synthetic"]
+        extra = [c for c in result.columns if c not in cols]
+        result = result[cols + extra].copy()
+
+        return result
+
+    # ============================================================
+    # CONCURRENT FAULT GENERATORS (Graph-Aware V3)
+    # ============================================================
+
+    def generate_concurrent_cpu_network(self, n_timesteps: int) -> pd.DataFrame:
+        """CPU stress (Worker2) + Network latency (Worker3) bersamaan."""
+        all_rows = []
+        base_time = datetime.utcnow() - timedelta(hours=np.random.randint(1, 48))
+
+        for pod_svc in ALL_PODS:
+            pod_name = self._get_pod_full_name(pod_svc)
+
+            if pod_svc in WORKER2_PODS:
+                # CPU stress pada worker2
+                metrics = self._generate_fault_metrics_cpu_stress(n_timesteps)
+                label = "FAULT_CPU_STRESS"
+            elif pod_svc in WORKER3_PODS:
+                # Network latency pada worker3
+                metrics = self._generate_fault_metrics_network_latency(n_timesteps)
+                label = "FAULT_NETWORK_LATENCY"
+            else:
+                # Pod lain normal
+                metrics = self._generate_normal_metrics(n_timesteps)
+                label = "NORMAL"
+
+            timestamps = [base_time + timedelta(seconds=j * 5) for j in range(n_timesteps)]
+            pod_df = pd.DataFrame(metrics)
+            pod_df["timestamp"] = timestamps
+            pod_df["pod_name"] = pod_name
+            pod_df["pod_service"] = pod_svc
+            pod_df["label"] = label
+            pod_df["is_synthetic"] = True
+            all_rows.append(pod_df)
+
+        result = pd.concat(all_rows, ignore_index=True)
+        result = result.sort_values(["timestamp", "pod_name"]).reset_index(drop=True)
+
+        cols = ["timestamp", "pod_name"] + NUMERIC_COLS + ["label", "pod_service", "is_synthetic"]
+        extra = [c for c in result.columns if c not in cols]
+        return result[cols + extra].copy()
+
+    def generate_concurrent_memory_crash(self, n_timesteps: int) -> pd.DataFrame:
+        """Memory leak (Worker2) yang berujung OOM crash."""
+        all_rows = []
+        base_time = datetime.utcnow() - timedelta(hours=np.random.randint(1, 48))
+
+        crash_point = int(n_timesteps * 0.7)
+
+        for pod_svc in ALL_PODS:
+            pod_name = self._get_pod_full_name(pod_svc)
+
+            if pod_svc in WORKER2_PODS:
+                # Memory leak → crash
+                metrics = self._generate_fault_metrics_memory_leak(n_timesteps)
+
+                timestamps = [base_time + timedelta(seconds=j * 5) for j in range(n_timesteps)]
+                pod_df = pd.DataFrame(metrics)
+                pod_df["timestamp"] = timestamps
+                pod_df["pod_name"] = pod_name
+                pod_df["pod_service"] = pod_svc
+                pod_df["label"] = "FAULT_MEMORY_LEAK"
+                pod_df.loc[crash_point:, "label"] = "FAULT_POD_CRASH"
+                pod_df["is_synthetic"] = True
+            else:
+                metrics = self._generate_normal_metrics(n_timesteps)
+                timestamps = [base_time + timedelta(seconds=j * 5) for j in range(n_timesteps)]
+                pod_df = pd.DataFrame(metrics)
+                pod_df["timestamp"] = timestamps
+                pod_df["pod_name"] = pod_name
+                pod_df["pod_service"] = pod_svc
+                pod_df["label"] = "NORMAL"
+                pod_df["is_synthetic"] = True
+
+            all_rows.append(pod_df)
+
+        result = pd.concat(all_rows, ignore_index=True)
+        result = result.sort_values(["timestamp", "pod_name"]).reset_index(drop=True)
+
+        cols = ["timestamp", "pod_name"] + NUMERIC_COLS + ["label", "pod_service", "is_synthetic"]
+        extra = [c for c in result.columns if c not in cols]
+        return result[cols + extra].copy()
+
+    # ============================================================
+    # MAIN RUN
+    # ============================================================
 
     def run(self, real_df: pd.DataFrame) -> pd.DataFrame:
         """Generate semua data sintetis dan gabung dengan real."""
         self.compute_label_stats(real_df)
 
-        generators = {
-            "NORMAL":                self.generate_normal,
-            "FAULT_CPU_STRESS":      self.generate_cpu_stress,
-            "FAULT_MEMORY_LEAK":     self.generate_memory_leak,
-            "FAULT_POD_CRASH":       self.generate_pod_crash,
-            "FAULT_NETWORK_LATENCY": self.generate_network_latency,
-        }
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("  V3 Graph-Aware Synthetic Generator")
+        logger.info("  Each timestep generates 11 rows (1 per pod)")
+        logger.info("  Only TARGET pods get fault labels")
+        logger.info("=" * 60)
 
         synthetic_parts = []
-        logger.info("")
-        logger.info("=" * 60)
-        logger.info("  Generating physics-based synthetic data...")
-        logger.info("=" * 60)
 
-        for label, gen_fn in generators.items():
-            real_count = self.stats_per_label.get(label, {}).get("count", 0)
-            needed = max(0, self.target_per_class - real_count)
+        # Hitung berapa timestep per kelas yang dibutuhkan
+        # target_per_class = target baris FAULT (hanya pod target, bukan 11 pod)
+        for fault_label in ["FAULT_CPU_STRESS", "FAULT_MEMORY_LEAK",
+                            "FAULT_POD_CRASH", "FAULT_NETWORK_LATENCY"]:
+            target_pods = FAULT_TARGET_PODS[fault_label]
+            n_target_pods = len([p for p in target_pods if p in ALL_PODS])
 
-            if needed <= 0:
-                logger.info(f"  {label}: Already {real_count} rows, no synthetic needed")
+            # Hitung berapa baris fault yang sudah ada di data real
+            real_count = len(real_df[real_df["label"] == fault_label]) if fault_label in real_df["label"].values else 0
+            needed_fault_rows = max(0, self.target_per_class - real_count)
+
+            if needed_fault_rows <= 0:
+                logger.info(f"  {fault_label}: Already {real_count} fault rows, no synthetic needed")
                 continue
 
-            synth = gen_fn(needed)
-            if len(synth) == 0:
-                continue
+            # Jumlah timestep: needed_fault_rows / n_target_pods
+            # (karena setiap timestep hanya menghasilkan n_target_pods baris fault)
+            n_timesteps = max(1, needed_fault_rows // max(n_target_pods, 1))
 
-            synth = self._add_metadata(synth, real_df)
-            synth["is_synthetic"] = True
+            logger.info(f"  {fault_label}: need {needed_fault_rows} fault rows → {n_timesteps} timesteps × {n_target_pods} target pods")
 
-            # Log intensitas breakdown
-            if "_intensity" in synth.columns:
-                intensity_dist = synth["_intensity"].value_counts().to_dict()
-                detail = ", ".join([f"{k}={v}" for k, v in intensity_dist.items()])
-                synth.drop(columns=["_intensity"], inplace=True)
-            else:
-                detail = "uniform"
+            snapshot_df = self.generate_graph_snapshots(fault_label, n_timesteps)
+            synthetic_parts.append(snapshot_df)
 
-            synthetic_parts.append(synth)
-            logger.info(f"  {label}: +{len(synth)} rows (real={real_count}) [{detail}]")
+            actual_fault = len(snapshot_df[snapshot_df["label"] == fault_label])
+            actual_normal = len(snapshot_df[snapshot_df["label"] == "NORMAL"])
+            logger.info(f"    Generated: {actual_fault} fault rows + {actual_normal} normal rows = {len(snapshot_df)} total")
 
-        # Concurrent faults (bonus rows)
+        # Normal snapshots (untuk menyeimbangkan)
+        real_normal_count = len(real_df[real_df["label"] == "NORMAL"]) if "NORMAL" in real_df["label"].values else 0
+        needed_normal = max(0, self.target_per_class - real_normal_count)
+        if needed_normal > 0:
+            n_normal_timesteps = max(1, needed_normal // len(ALL_PODS))
+            normal_df = self._generate_normal_snapshots(n_normal_timesteps)
+            synthetic_parts.append(normal_df)
+            logger.info(f"  NORMAL: +{len(normal_df)} rows ({n_normal_timesteps} timesteps)")
+
+        # Concurrent faults (bonus)
         logger.info("")
         logger.info("  Generating concurrent fault scenarios...")
-        concurrent_n = self.target_per_class // 5  # 20% dari target
+        concurrent_timesteps = max(1, self.target_per_class // (5 * len(ALL_PODS)))
 
-        concurrent_cpu_net = self.generate_concurrent_cpu_network(concurrent_n)
-        concurrent_cpu_net = self._add_metadata(concurrent_cpu_net, real_df)
-        concurrent_cpu_net["is_synthetic"] = True
-        if "_intensity" in concurrent_cpu_net.columns:
-            concurrent_cpu_net.drop(columns=["_intensity"], inplace=True)
+        concurrent_cpu_net = self.generate_concurrent_cpu_network(concurrent_timesteps)
         synthetic_parts.append(concurrent_cpu_net)
-        logger.info(f"  CONCURRENT (CPU+Network): +{len(concurrent_cpu_net)} rows")
+        logger.info(f"  CONCURRENT (CPU+Network): +{len(concurrent_cpu_net)} rows ({concurrent_timesteps} timesteps)")
 
-        concurrent_mem_crash = self.generate_concurrent_memory_crash(concurrent_n)
-        concurrent_mem_crash = self._add_metadata(concurrent_mem_crash, real_df)
-        concurrent_mem_crash["is_synthetic"] = True
-        if "_intensity" in concurrent_mem_crash.columns:
-            concurrent_mem_crash.drop(columns=["_intensity"], inplace=True)
+        concurrent_mem_crash = self.generate_concurrent_memory_crash(concurrent_timesteps)
         synthetic_parts.append(concurrent_mem_crash)
-        logger.info(f"  CONCURRENT (Memory->Crash): +{len(concurrent_mem_crash)} rows")
+        logger.info(f"  CONCURRENT (Memory→Crash): +{len(concurrent_mem_crash)} rows ({concurrent_timesteps} timesteps)")
 
         if not synthetic_parts:
             logger.success("All classes already have enough data!")
@@ -632,17 +691,17 @@ class PhysicsBasedGenerator:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="XFSCI Synthetic Generator V2 - Physics-Based")
+    parser = argparse.ArgumentParser(description="XFSCI Synthetic Generator V3 - Graph-Aware")
     parser.add_argument("--input",            type=str, default=None)
     parser.add_argument("--output",           type=str, default=None)
     parser.add_argument("--target-per-class", type=int, default=5000,
-                        help="Target minimum baris per kelas (default: 5000)")
+                        help="Target minimum baris FAULT per kelas (default: 5000)")
     parser.add_argument("--noise",            type=float, default=0.10,
                         help="Faktor noise (default: 0.10)")
     args = parser.parse_args()
 
     logger.info("=" * 60)
-    logger.info("  XFSCI Synthetic Generator V2 - Physics-Based")
+    logger.info("  XFSCI Synthetic Generator V3 - Graph-Aware")
     logger.info(f"  Target per class : {args.target_per_class}")
     logger.info(f"  Noise factor     : {args.noise}")
     logger.info("=" * 60)
@@ -662,7 +721,7 @@ def main():
     real_df["timestamp"] = pd.to_datetime(real_df["timestamp"])
     logger.info(f"Real data: {len(real_df):,} rows")
 
-    gen = PhysicsBasedGenerator(
+    gen = GraphAwareGenerator(
         target_per_class=args.target_per_class,
         noise_factor=args.noise,
     )
@@ -672,7 +731,7 @@ def main():
     ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     synth_only = combined[combined["is_synthetic"] == True]
 
-    synth_path = SYNTHETIC_DIR / f"synthetic_v2_{ts_str}.csv"
+    synth_path = SYNTHETIC_DIR / f"synthetic_v3_{ts_str}.csv"
     synth_only.to_csv(synth_path, index=False)
     logger.info(f"Synthetic-only saved: {synth_path.name} ({len(synth_only):,} rows)")
 

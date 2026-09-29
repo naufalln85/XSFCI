@@ -135,13 +135,13 @@ class GNNPredictor:
 
     def build_feature_tensor_from_metrics(self, current_metrics_map: Dict[str, Dict[str, float]]) -> torch.Tensor:
         """
-        Mengonstruksi tensor input [11, 18] dari snapshot metrik real-time.
+        Mengonstruksi tensor input [11, 21] dari snapshot metrik real-time (V2).
         
         Args:
           current_metrics_map: Dict {service_name: {metric_col: float_val}}
           
         Returns:
-          Tensor [11, 18] ternormalisasi
+          Tensor [11, 21] ternormalisasi
         """
         num_features = len(NORMALIZED_FEATURE_COLS)
         x_matrix = np.zeros((len(SERVICE_NAMES), num_features), dtype=np.float32)
@@ -211,44 +211,48 @@ class GNNPredictor:
         cluster_risk = float(graph_urgency.squeeze().item())
 
         raw_features = x_tensor.cpu().numpy()
-        _sorted_feats = sorted([
-            "anomaly_score_raw_norm", "cpu_delta_norm", "cpu_rolling_mean_5_norm",
-            "cpu_rolling_std_5_norm", "cpu_usage_norm", "error_rate_norm",
-            "mem_rolling_mean_5_norm", "memory_delta_norm", "memory_growth_rate_norm",
-            "memory_usage_norm", "memory_usage_percent_norm", "net_rx_bytes_norm",
-            "net_rx_tx_ratio_norm", "net_total_bytes_norm", "net_tx_bytes_norm",
-            "pod_restarts_norm", "request_rate_norm", "restart_delta_norm",
-        ])
+        # V2: Use NORMALIZED_FEATURE_COLS directly (21 features sorted)
+        _sorted_feats = sorted(NORMALIZED_FEATURE_COLS)
         idx_anomaly = _sorted_feats.index("anomaly_score_raw_norm")
         idx_cpu = _sorted_feats.index("cpu_usage_norm")
         idx_pod_restarts = _sorted_feats.index("pod_restarts_norm")
         idx_restart_delta = _sorted_feats.index("restart_delta_norm")
+        idx_mem_slope = _sorted_feats.index("memory_slope_12_norm")
+        idx_cpu_zscore = _sorted_feats.index("cpu_zscore_pod_norm")
+        idx_net_asym = _sorted_feats.index("net_asymmetry_norm")
 
-        # Diagnosis Target Pod (Hierarchical Gated + Physical Guardrails)
+        # Diagnosis Target Pod (Hierarchical Gated + Physical Guardrails V2)
         if cluster_risk < 0.50:
             pred_label_id = 0
             confidence = float(1.0 - cluster_risk)
             anomaly_type = AnomalyType.NORMAL
         else:
             target_probs = node_probs[target_idx].cpu().numpy().copy()
-            # Physical Guardrail checks on target pod:
+            # Physical Guardrail V2 checks on target pod:
             if raw_features[target_idx, idx_pod_restarts] == 0 and raw_features[target_idx, idx_restart_delta] == 0:
-                target_probs[3] = 0.0  # Hapus kemungkinan Pod Crash jika pod tidak pernah/sedang restart
+                target_probs[3] = 0.0  # Hapus kemungkinan Pod Crash
             if raw_features[target_idx, idx_cpu] < 0.05:
-                target_probs[1] = 0.0  # Hapus kemungkinan CPU Stress jika CPU sangat dingin
+                target_probs[1] = 0.0  # Hapus kemungkinan CPU Stress
+            if raw_features[target_idx, idx_mem_slope] <= 0.01:
+                target_probs[2] = 0.0  # Hapus kemungkinan Memory Leak jika slope <= 0
+            if raw_features[target_idx, idx_net_asym] < 0.03:
+                target_probs[4] = 0.0  # Hapus kemungkinan Network Latency jika traffic simetris
 
             pred_label_id = int(np.argmax(target_probs))
             confidence = float(target_probs[pred_label_id])
             anomaly_type = GNN_LABEL_TO_ANOMALY_TYPE.get(pred_label_id, AnomalyType.NORMAL)
 
-        # Root Cause Analysis: Hybrid scoring (GNN + Local Features)
-        # GNN skor terkontaminasi oleh tetangga, jadi digabung dengan fitur lokal
+        # Root Cause Analysis V2: Hybrid scoring (GNN + Enriched Local Features)
         gnn_anomaly = 1.0 - node_probs[:, 0].cpu().numpy()
-        local_scores = (0.40 * raw_features[:, idx_anomaly] +
-                        0.30 * raw_features[:, idx_cpu] +
-                        0.30 * raw_features[:, idx_restart_delta])
-        # Hybrid: 30% GNN + 70% lokal
-        hybrid_scores = 0.30 * gnn_anomaly + 0.70 * local_scores
+        local_scores = (
+            0.25 * raw_features[:, idx_anomaly] +
+            0.20 * raw_features[:, idx_cpu_zscore] +
+            0.20 * raw_features[:, idx_restart_delta] +
+            0.20 * raw_features[:, idx_mem_slope] +
+            0.15 * raw_features[:, idx_net_asym]
+        )
+        # Hybrid: 25% GNN + 75% lokal (mengatasi graph contamination)
+        hybrid_scores = 0.25 * gnn_anomaly + 0.75 * local_scores
         root_cause_idx = int(np.argmax(hybrid_scores))
         root_cause_svc = IDX_TO_SERVICE[root_cause_idx]
         root_cause_score = float(hybrid_scores[root_cause_idx])

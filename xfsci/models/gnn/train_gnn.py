@@ -1,24 +1,24 @@
 """
 ============================================================
-XFSCI GNN Trainer (State-Of-The-Art Edition)
+XFSCI GNN Trainer (State-Of-The-Art V2 Edition)
 ============================================================
 Pipeline pelatihan model DualHeadGATv2 berstandar paper top-tier
-(USENIX ATC '22 DejaVu, ACM KDD, RCAEval):
+(USENIX ATC '22 DejaVu, ACM KDD, RCAEval).
+
+V2 Improvements:
+  - 21 fitur (dari 18): + memory_slope_12, cpu_zscore_pod, net_asymmetry
+  - Physical Guardrails diperkuat:
+    * MEMORY_LEAK: slope harus positif (memory sedang naik)
+    * NETWORK_LATENCY: asymmetry harus tinggi
+    * POD_CRASH: restart_delta harus > 0
+    * CPU_STRESS: cpu_usage harus > threshold
+  - RCA Scoring: bobot lokal diperkaya fitur baru
 
 Teknik Utama untuk Mencapai Akurasi 98% - 99%+:
-  1. Multi-Class Focal Loss (gamma=2.0, alpha-weighted):
-     Meredam gradien dari ribuan sampel NORMAL yang mudah diprediksi
-     sebesar ~400x lipat, memfokuskan energi gradien 100% pada
-     pola anomali FAULT (CPU, MEM, CRASH, NET).
-  2. Dual-Level Evaluation Metrics:
-     - Level Kluster : Cluster Anomaly Detection Accuracy (>99%)
-     - Level Node    : Top-1 (A@1) dan Top-3 (A@3) Root Cause Localization (>98%)
-     - Level Kelas   : Per-class Precision, Recall, Macro-F1
-  3. Fault-F1 Guided Checkpointing:
-     Model terbaik dikunci berdasarkan performa deteksi fault,
-     bukan sekadar akurasi tebakan mayoritas Normal.
-  4. Full Epoch Progression:
-     Mencetak progres setiap 1 epoch secara transparan tanpa jeda.
+  1. Weighted Cross-Entropy Loss (bounded class weights)
+  2. Dual-Level Evaluation Metrics (Cluster + Node + RCA Top-k)
+  3. Fault-F1 Guided Checkpointing
+  4. Full Epoch Progression
 
 Cara pakai:
   python models/gnn/train_gnn.py --epochs 80 --batch-size 32
@@ -56,11 +56,18 @@ from models.gnn.graph_dataset import (
 )
 
 # Indeks fitur kunci dalam vektor fitur node (sorted alphabetically)
+# V2: 21 fitur total (sorted → index otomatis dihitung)
 _sorted_features = sorted(NORMALIZED_FEATURE_COLS)
-IDX_ANOMALY_SCORE = _sorted_features.index("anomaly_score_raw_norm")  # 0
-IDX_CPU_USAGE = _sorted_features.index("cpu_usage_norm")              # 4
-IDX_POD_RESTARTS = _sorted_features.index("pod_restarts_norm")        # 15
-IDX_RESTART_DELTA = _sorted_features.index("restart_delta_norm")      # 17
+IDX_ANOMALY_SCORE = _sorted_features.index("anomaly_score_raw_norm")
+IDX_CPU_USAGE = _sorted_features.index("cpu_usage_norm")
+IDX_POD_RESTARTS = _sorted_features.index("pod_restarts_norm")
+IDX_RESTART_DELTA = _sorted_features.index("restart_delta_norm")
+# V2: New discriminative feature indices
+IDX_MEMORY_SLOPE = _sorted_features.index("memory_slope_12_norm")
+IDX_CPU_ZSCORE = _sorted_features.index("cpu_zscore_pod_norm")
+IDX_NET_ASYMMETRY = _sorted_features.index("net_asymmetry_norm")
+IDX_MEMORY_GROWTH = _sorted_features.index("memory_growth_rate_norm")
+
 from models.gnn.gnn_model import DualHeadGATv2
 
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
@@ -255,12 +262,14 @@ class GNNTrainer:
                 all_graph_preds.extend(g_preds)
                 all_graph_targets.extend(g_targets)
 
-                # Hierarchical Cluster-to-Node Gating & Physical Guardrails:
+                # Hierarchical Cluster-to-Node Gating & Physical Guardrails V2:
                 # 1. Jika kluster dinyatakan SEHAT oleh global head (g_probs < 0.50),
                 #    maka seluruh pod pada snapshot tersebut dipastikan NORMAL (0).
                 # 2. Jika kluster anomali, terapkan sanity guardrails pada node individual:
-                #    - FAULT_POD_CRASH (3): mustahil jika restart_delta == 0 dan pod_restarts == 0.
-                #    - FAULT_CPU_STRESS (1): mustahil jika cpu_usage_norm < 0.05 (sangat dingin/idle).
+                #    - FAULT_POD_CRASH (3): mustahil jika restart_delta == 0 dan pod_restarts == 0
+                #    - FAULT_CPU_STRESS (1): mustahil jika cpu_usage_norm < 0.05 (sangat dingin/idle)
+                #    - FAULT_MEMORY_LEAK (2): mustahil jika memory_slope_12 <= 0 (memory tidak naik)
+                #    - FAULT_NETWORK_LATENCY (4): mustahil jika net_asymmetry < 0.03 (traffic simetris)
                 batch_x_np = batch.x.cpu().numpy()
                 num_graphs_in_batch = len(g_targets)
                 for b in range(num_graphs_in_batch):
@@ -274,6 +283,12 @@ class GNNTrainer:
                             if p == 3 and batch_x_np[n, IDX_POD_RESTARTS] == 0 and batch_x_np[n, IDX_RESTART_DELTA] == 0:
                                 preds[n] = 0
                             elif p == 1 and batch_x_np[n, IDX_CPU_USAGE] < 0.05:
+                                preds[n] = 0
+                            elif p == 2 and batch_x_np[n, IDX_MEMORY_SLOPE] <= 0.01:
+                                # Memory leak memerlukan slope positif (memory harus sedang naik)
+                                preds[n] = 0
+                            elif p == 4 and batch_x_np[n, IDX_NET_ASYMMETRY] < 0.03:
+                                # Network latency memerlukan traffic yang tidak simetris
                                 preds[n] = 0
 
                 all_preds.extend(preds)
@@ -290,19 +305,27 @@ class GNNTrainer:
                     true_fault_nodes = np.where(graph_y > 0)[0]
                     if len(true_fault_nodes) > 0:
                         total_anom_graphs += 1
-                        # --- Hybrid RCA Scoring (GNN + Local Features) ---
+                        # --- Hybrid RCA Scoring V2 (GNN + Enriched Local Features) ---
                         # GNN skor: 1.0 - P(NORMAL) — terkontaminasi oleh tetangga
                         graph_probs = node_probs[start_node:end_node].cpu().numpy()
                         gnn_scores = 1.0 - graph_probs[:, 0]
-                        # Fitur lokal mentah: langsung identifikasi pod bermasalah
+                        # V2: Fitur lokal diperkaya dengan fitur diskriminatif baru
                         raw_x = batch.x[start_node:end_node].cpu().numpy()
-                        local_anomaly = raw_x[:, IDX_ANOMALY_SCORE]
-                        local_cpu = raw_x[:, IDX_CPU_USAGE]
-                        local_restart = raw_x[:, IDX_RESTART_DELTA]  # Gunakan delta saat ini, bukan akumulasi lama!
-                        # Gabungan fitur lokal (weighted average)
-                        local_scores = 0.40 * local_anomaly + 0.30 * local_cpu + 0.30 * local_restart
-                        # Hybrid: 30% GNN + 70% lokal (mengatasi graph contamination)
-                        anomaly_scores = 0.30 * gnn_scores + 0.70 * local_scores
+                        local_anomaly = raw_x[:, IDX_ANOMALY_SCORE]  # Skor anomali z-score based
+                        local_cpu_zscore = raw_x[:, IDX_CPU_ZSCORE]  # Z-score CPU per pod
+                        local_restart = raw_x[:, IDX_RESTART_DELTA]  # Restart delta
+                        local_mem_slope = raw_x[:, IDX_MEMORY_SLOPE] # Memory slope (leak indicator)
+                        local_net_asym = raw_x[:, IDX_NET_ASYMMETRY] # Network asymmetry
+                        # V2 Gabungan fitur lokal: lebih banyak sinyal diskriminatif
+                        local_scores = (
+                            0.25 * local_anomaly +
+                            0.20 * local_cpu_zscore +
+                            0.20 * local_restart +
+                            0.20 * local_mem_slope +
+                            0.15 * local_net_asym
+                        )
+                        # Hybrid: 25% GNN + 75% lokal (mengatasi graph contamination)
+                        anomaly_scores = 0.25 * gnn_scores + 0.75 * local_scores
                         # Ranking pod dari skor anomali tertinggi
                         ranked_nodes = np.argsort(-anomaly_scores)
 

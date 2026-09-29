@@ -1,22 +1,32 @@
 """
 ============================================================
-XFSCI Feature Engineer - Fase 3D: Preprocessing
+XFSCI Feature Engineer - Fase 3D: Preprocessing (V2 - SOTA)
 ============================================================
 Menghitung fitur-fitur turunan (derived features) dari
 dataset yang sudah di-augmentasi untuk meningkatkan
 kemampuan model LSTM dan GNN dalam mendeteksi pola anomali.
 
+Peningkatan V2 (SOTA Edition):
+  - Per-pod Z-score normalisasi (bukan global min-max)
+  - Memory Slope (rolling regression 12 step = 60 detik)
+  - Network Asymmetry (|RX-TX| / total)
+  - CPU Z-Score per Pod (deviasi dari baseline tiap pod)
+  - Anomaly Score berbasis z-score (bukan global norm)
+
 Fitur Turunan yang Dihasilkan:
-  1. cpu_delta          : Delta cpu_usage antara step (rate of change)
-  2. memory_delta       : Delta memory_usage antara step
-  3. memory_growth_rate : Laju pertumbuhan memori per menit (MB/min)
-  4. cpu_rolling_mean_5 : Rolling mean CPU 5 step (~25 detik)
-  5. cpu_rolling_std_5  : Rolling std CPU 5 step (volatility indicator)
-  6. mem_rolling_mean_5 : Rolling mean Memory 5 step
-  7. restart_delta      : Kenaikan restart count
-  8. net_total_bytes    : net_rx + net_tx (total throughput)
-  9. net_rx_tx_ratio    : Rasio RX/TX (deteksi traffic anomali)
- 10. anomaly_score_raw  : Skor anomali mentah (0-1, deterministik)
+   1. cpu_delta           : Delta cpu_usage antara step (rate of change)
+   2. memory_delta        : Delta memory_usage antara step
+   3. memory_growth_rate  : Laju pertumbuhan memori per menit (MB/min)
+   4. cpu_rolling_mean_5  : Rolling mean CPU 5 step (~25 detik)
+   5. cpu_rolling_std_5   : Rolling std CPU 5 step (volatility indicator)
+   6. mem_rolling_mean_5  : Rolling mean Memory 5 step
+   7. restart_delta       : Kenaikan restart count
+   8. net_total_bytes     : net_rx + net_tx (total throughput)
+   9. net_rx_tx_ratio     : Rasio RX/TX (deteksi traffic anomali)
+  10. anomaly_score_raw   : Skor anomali mentah (0-1, deterministik)
+  11. memory_slope_12     : Rolling OLS slope memory 12 step (60 detik)
+  12. cpu_zscore_pod      : Z-score CPU per pod (deviasi dari baseline)
+  13. net_asymmetry       : |RX-TX| / (RX+TX+eps) untuk deteksi traffic anomali
 
 Output:
   data/processed/dataset_ready.csv  <-- File final untuk pelatihan model
@@ -54,6 +64,10 @@ DERIVED_COLS = [
     "cpu_rolling_mean_5", "cpu_rolling_std_5", "mem_rolling_mean_5",
     "restart_delta", "net_total_bytes", "net_rx_tx_ratio",
     "anomaly_score_raw",
+    # V2 SOTA: fitur diskriminatif baru
+    "memory_slope_12",     # Rolling OLS slope memory (12 step = 60 detik)
+    "cpu_zscore_pod",      # Z-score CPU per-pod (deviasi dari baseline sendiri)
+    "net_asymmetry",       # |RX - TX| / (RX + TX + eps) untuk deteksi traffic anomali
 ]
 
 # Kolom final untuk model (input features)
@@ -146,32 +160,138 @@ class FeatureEngineer:
         # Clip rasio ke nilai wajar [0, 100]
         df["net_rx_tx_ratio"] = df["net_rx_tx_ratio"].clip(0, 100)
 
-        logger.info("  Network features added: net_total_bytes, net_rx_tx_ratio")
+        # V2: Network Asymmetry — |RX - TX| / (RX + TX + eps)
+        # Nilai mendekati 0 = traffic simetris (normal)
+        # Nilai mendekati 1 = traffic sangat tidak simetris (anomali jaringan)
+        rx = df["net_rx_bytes"]
+        tx = df["net_tx_bytes"]
+        df["net_asymmetry"] = (
+            (rx - tx).abs() / (rx + tx + 1e-10)
+        ).clip(0, 1).round(6)
+
+        logger.info("  Network features added: net_total_bytes, net_rx_tx_ratio, net_asymmetry")
+        return df
+
+    def add_memory_slope(self, df: pd.DataFrame, window: int = 12) -> pd.DataFrame:
+        """
+        Hitung rolling OLS slope memory per pod selama `window` timesteps.
+        window=12 berarti 12 * 5s = 60 detik.
+
+        Memory slope POSITIF → memory sedang naik (indikator memory leak)
+        Memory slope ~0 → memory stabil (normal)
+        Memory slope NEGATIF → memory turun (recovery)
+
+        Ini KRITIS karena memory_delta hanya melihat selisih 1-step,
+        sementara memory leak memiliki TREND naik yang gradual.
+        """
+        df = df.sort_values(["pod_name", "timestamp"]).copy()
+
+        def rolling_slope(series, w):
+            """Hitung slope linear (least-squares) pada rolling window."""
+            result = np.zeros(len(series))
+            x = np.arange(w, dtype=np.float64)
+            x_mean = x.mean()
+            x_var = ((x - x_mean) ** 2).sum()
+
+            vals = series.values.astype(np.float64)
+            for i in range(len(vals)):
+                if i < w - 1:
+                    # Window belum penuh, gunakan window parsial
+                    actual_w = i + 1
+                    if actual_w < 2:
+                        result[i] = 0.0
+                        continue
+                    x_partial = np.arange(actual_w, dtype=np.float64)
+                    y_partial = vals[i - actual_w + 1:i + 1]
+                    x_mean_p = x_partial.mean()
+                    y_mean_p = y_partial.mean()
+                    x_var_p = ((x_partial - x_mean_p) ** 2).sum()
+                    if x_var_p == 0:
+                        result[i] = 0.0
+                    else:
+                        result[i] = ((x_partial - x_mean_p) * (y_partial - y_mean_p)).sum() / x_var_p
+                else:
+                    y_window = vals[i - w + 1:i + 1]
+                    y_mean = y_window.mean()
+                    if x_var == 0:
+                        result[i] = 0.0
+                    else:
+                        result[i] = ((x - x_mean) * (y_window - y_mean)).sum() / x_var
+
+            return pd.Series(result, index=series.index)
+
+        # Normalize memory to MB sebelum hitung slope (agar unit lebih mudah diinterpretasi)
+        df["_mem_mb"] = df["memory_usage"] / (1024**2)
+        df["memory_slope_12"] = (
+            df.groupby("pod_name")["_mem_mb"]
+              .transform(lambda x: rolling_slope(x, window))
+              .round(4)
+        )
+        df.drop(columns=["_mem_mb"], inplace=True)
+
+        logger.info(f"  Memory slope added (window={window}): memory_slope_12 (MB/step)")
+        return df
+
+    def add_cpu_zscore_per_pod(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Hitung z-score CPU per pod: (cpu_i - mean_pod) / std_pod.
+
+        Ini mengatasi masalah global normalization dimana:
+        - Frontend secara normal CPU 0.15-0.25 → terlihat "tinggi" secara global
+        - redis-cart secara normal CPU 0.01 → terlihat "rendah" secara global
+        
+        Dengan z-score per-pod, anomali diukur berdasarkan
+        deviasi dari BASELINE masing-masing pod.
+        """
+        df = df.sort_values(["pod_name", "timestamp"]).copy()
+
+        # Hitung z-score CPU per pod
+        def pod_zscore(series):
+            mean = series.mean()
+            std = series.std()
+            if std == 0 or np.isnan(std):
+                return pd.Series(np.zeros(len(series)), index=series.index)
+            return ((series - mean) / std).clip(-5, 5)  # Clip ke [-5, 5] untuk stabilitas
+
+        df["cpu_zscore_pod"] = (
+            df.groupby("pod_name")["cpu_usage"]
+              .transform(pod_zscore)
+              .round(4)
+        )
+
+        logger.info("  CPU z-score per pod added: cpu_zscore_pod")
         return df
 
     def add_anomaly_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Hitung skor anomali deterministik (0-1) berdasarkan bobot fitur.
-        Digunakan sebagai sinyal awal sebelum model ML dilatih.
-        Rumus: weighted sum dari normalized metrics.
+        V2: Menggunakan per-pod z-score dan fitur baru (slope, asymmetry).
+
+        Komponen scoring:
+          - cpu_zscore_pod: pod yang CPU-nya jauh dari baseline sendiri
+          - memory_slope_12: pod yang memory-nya sedang naik signifikan
+          - restart_delta: pod yang baru saja restart
+          - net_asymmetry: traffic yang tidak simetris
+          - error_rate: tingkat error HTTP/gRPC
         """
-        # Normalisasi per-fitur ke [0, 1] secara lokal
         def norm(series):
             mn, mx = series.min(), series.max()
             if mx - mn == 0:
                 return pd.Series(np.zeros(len(series)), index=series.index)
             return (series - mn) / (mx - mn)
 
+        # V2: Scoring berbasis fitur yang lebih diskriminatif
         score = (
-            0.35 * norm(df["cpu_usage"].clip(0, 4)) +
-            0.25 * norm(df["memory_usage"].clip(0, 4 * 1024**3)) +
-            0.20 * norm(df["restart_delta"].clip(0, 5)) +
-            0.10 * norm(df["memory_growth_rate"].clip(0, 100)) +
-            0.10 * norm(df["net_total_bytes"].clip(0, 1e8))
+            0.25 * norm(df["cpu_zscore_pod"].abs().clip(0, 5)) +         # Deviasi CPU dari baseline pod
+            0.20 * norm(df["memory_slope_12"].clip(0, 100)) +            # Trend memory naik (leak indicator)
+            0.20 * norm(df["restart_delta"].clip(0, 5)) +                # Restart baru terjadi
+            0.15 * norm(df["net_asymmetry"].clip(0, 1)) +                # Traffic asymmetry
+            0.10 * norm(df["error_rate"].clip(0, 1)) +                   # Error rate
+            0.10 * norm(df["memory_growth_rate"].clip(0, 100))            # Growth rate memory
         )
 
         df["anomaly_score_raw"] = score.round(4)
-        logger.info("  Anomaly score added: anomaly_score_raw (0-1)")
+        logger.info("  Anomaly score V2 added: anomaly_score_raw (0-1, z-score based)")
         return df
 
     def add_label_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -222,11 +342,16 @@ class FeatureEngineer:
     def print_summary(self, df: pd.DataFrame):
         logger.info("")
         logger.info("=" * 55)
-        logger.info("  Feature Engineering Summary:")
+        logger.info("  Feature Engineering Summary (V2 SOTA):")
         logger.info(f"  Total rows       : {len(df):,}")
         logger.info(f"  Total features   : {len(MODEL_FEATURE_COLS)} base + {len(MODEL_FEATURE_COLS)} norm")
         logger.info(f"  Unique pods      : {df['pod_name'].nunique()}")
         logger.info(f"  Columns          : {list(df.columns)}")
+        logger.info("")
+        logger.info("  V2 New Features:")
+        for col in ["memory_slope_12", "cpu_zscore_pod", "net_asymmetry"]:
+            if col in df.columns:
+                logger.info(f"    {col:25s} : min={df[col].min():.4f} | max={df[col].max():.4f} | mean={df[col].mean():.4f}")
         logger.info("")
         logger.info("  Label distribution (final):")
         dist = df["label"].value_counts()
@@ -261,6 +386,8 @@ class FeatureEngineer:
         df = self.add_delta_features(df)
         df = self.add_rolling_features(df, window=5)
         df = self.add_network_features(df)
+        df = self.add_memory_slope(df, window=12)
+        df = self.add_cpu_zscore_per_pod(df)
         df = self.add_anomaly_score(df)
         df = self.add_label_encoding(df)
         self.compute_scaler_params(df)
@@ -272,26 +399,27 @@ class FeatureEngineer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="XFSCI Feature Engineer - Fase 3D")
+    parser = argparse.ArgumentParser(description="XFSCI Feature Engineer - Fase 3D (V2 SOTA)")
     parser.add_argument("--input",  type=str, default=None, help="Path CSV augmented input")
     args = parser.parse_args()
 
     logger.info("=" * 55)
-    logger.info("  XFSCI Feature Engineer - Fase 3D")
+    logger.info("  XFSCI Feature Engineer - Fase 3D (V2 SOTA)")
     logger.info("=" * 55)
 
     # Pilih file input: augmented > cleaned > labeled (prioritas)
     if args.input:
         csv_path = Path(args.input)
     else:
-        # Pilih file input terbaru berdasarkan mtime
-        all_candidates = []
-        for pattern in ["cleaned_*.csv", "augmented_*.csv", "labeled_*.csv"]:
-            all_candidates.extend(PROCESSED_DIR.glob(pattern))
-        if all_candidates:
-            all_candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            csv_path = all_candidates[0]
-            logger.info(f"Using latest processed file: {csv_path.name}")
+        for pattern in ["augmented_*.csv", "cleaned_*.csv", "labeled_*.csv"]:
+            files = sorted(
+                PROCESSED_DIR.glob(pattern),
+                key=lambda p: p.stat().st_mtime, reverse=True
+            )
+            if files:
+                csv_path = files[0]
+                logger.info(f"Using: {csv_path.name}")
+                break
         else:
             logger.error("Tidak ada file processed. Jalankan pipeline dari data_labeler.py.")
             sys.exit(1)

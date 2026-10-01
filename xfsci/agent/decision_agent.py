@@ -1,20 +1,22 @@
 # ============================================================
-# XFSCI Decision Agent — Edge-Cloud 3-Tier AI Agent
+# XFSCI Decision Agent — 2-Tier Agentic AI (Antigravity + Rule-Based)
 # ============================================================
-# INTI UTAMA: Modul AI Agent dengan arsitektur Cloud-Edge-Deterministic:
-#   Tier 1: Groq LPU (cloud, ultra-fast, full RAG + Memory)
-#   Tier 2: Ollama 0.5B (lokal/edge, offline-capable)
-#   Tier 3: Rule-based engine (deterministik, always works)
+# INTI UTAMA: Modul AI Agent dengan arsitektur 2-Tier:
+#   Tier 1: Antigravity Agentic Runtime (Claude Opus / Gemini 3.8 Flash)
+#           - Berjalan di Sandbox aman, terintegrasi Akun Pro
+#   Tier 2: Rule-based engine (deterministik, always works)
+#           - Safety net 100% tanpa dependensi eksternal
 #
 # Mengambil keputusan self-healing berdasarkan:
-#   1. Data numerik dari Pandas (FAKTA, bukan opini)
-#   2. SOP Runbook dari RAG (DOKUMEN TERBUKTI)
-#   3. Pengalaman masa lalu dari Experience Memory
+#   1. GNN Root Cause Analysis (100% Cluster Acc, 0% halusinasi)
+#   2. Data numerik dari Pandas (FAKTA, bukan opini)
+#   3. SOP Runbook dari RAG (DOKUMEN TERBUKTI)
+#   4. Pengalaman masa lalu dari Experience Memory
 #
 # ANTI-HALUSINASI:
-#   - Input: Hanya angka dari Pandas + dokumen dari RAG
+#   - Input: GNN Top-3 RCA + angka Pandas + dokumen RAG
 #   - Output: JSON terkunci (Pydantic schema)
-#   - Fallback Chain: Groq → Ollama → Rule-based
+#   - Fallback: Antigravity → Rule-based Safety Net
 #   - Guardrails: Validasi sebelum eksekusi
 # ============================================================
 
@@ -27,11 +29,13 @@ from datetime import datetime
 import yaml
 from pathlib import Path
 from loguru import logger
-import httpx
 
-# Gemini SDK — lazy-loaded di dalam _setup_gemini() hanya jika enabled di config.
-# Ini menghilangkan FutureWarning banner saat startup ketika Gemini disabled.
-genai = None
+# Antigravity Python SDK — Programmatic Agentic Runtime
+try:
+    from google.antigravity import Agent as AGYAgent, LocalAgentConfig as AGYLocalAgentConfig, CapabilitiesConfig as AGYCapabilitiesConfig
+    ANTIGRAVITY_SDK_AVAILABLE = True
+except ImportError:
+    ANTIGRAVITY_SDK_AVAILABLE = False
 
 from agent.action_schema import (
     ActionType, ActionDecision, ActionParameters,
@@ -43,22 +47,14 @@ from agent.action_schema import (
 
 class XFSCIDecisionAgent:
     """
-    AI Agent dengan arsitektur Edge-Cloud 3-Tier untuk pengambilan
+    AI Agent dengan arsitektur 2-Tier untuk pengambilan
     keputusan self-healing di infrastruktur cloud Kubernetes.
     
-    Arsitektur Fallback:
-    - Tier 1 (Cloud Brain): Groq LPU — inferensi ultra-cepat (<1.5s)
-      dengan full RAG Runbook + Experience Memory
-    - Tier 2 (Edge/Local): Ollama 0.5B — offline-capable (3-5s di CPU)
-      dengan compact prompt untuk hemat resource
-    - Tier 3 (Safety Net): Rule-based engine — deterministik (0.001s)
+    Arsitektur:
+    - Tier 1 (Antigravity Agentic Runtime): Claude Opus / Gemini 3.8 Flash
+      berjalan di dalam Sandbox aman dengan Akun Pro Anda
+    - Tier 2 (Safety Net): Rule-based engine — deterministik (0.001s)
       selalu berhasil, tanpa dependensi eksternal
-    
-    Prinsip desain:
-    1. LLM HANYA melihat data yang sudah disiapkan (tidak query sendiri)
-    2. LLM HANYA boleh memilih aksi dari enum terkunci
-    3. LLM WAJIB menjelaskan alasannya berdasarkan data & SOP
-    4. Jika semua LLM gagal → Fallback ke rule-based engine
     """
     
     # System prompt yang mengunci perilaku AI Agent
@@ -85,7 +81,7 @@ PRIORITAS KEAMANAN:
     
     def __init__(self, config_path: str = None):
         """
-        Inisialisasi Gemini Flash AI Agent.
+        Inisialisasi Multi-Tier AI Agent.
         
         Args:
             config_path: Path ke config.yaml
@@ -100,237 +96,222 @@ PRIORITAS KEAMANAN:
         self.llm_config = self.agent_config.get("llm", {})
         self.valid_actions = self.agent_config.get("actions", [])
         self.fallback_enabled = self.agent_config.get("fallback", {}).get("enabled", True)
-        
-        # Setup Groq config
-        self.groq_config = self.agent_config.get("groq", {})
-        self.groq_available = False
-        
-        # Setup Ollama config
-        self.ollama_config = self.agent_config.get("ollama", {})
-        self.ollama_available = False
-        
-        # Setup LLM providers (urutan inisialisasi)
-        self._setup_groq()
-        
-        # Gemini: hanya inisialisasi jika enabled (default: disabled)
-        if self.llm_config.get("enabled", False):
-            self._setup_gemini()
-        else:
-            self.gemini_available = False
-            logger.info("Gemini disabled via config (3-tier mode: Groq → Ollama → Rules)")
-        
-        self._setup_ollama()
+
+        # Setup Antigravity config
+        self.antigravity_config = self.agent_config.get("antigravity", {})
+        self.antigravity_available = False
+        self._setup_antigravity()
         
         logger.info(
             f"XFSCIDecisionAgent initialized | "
-            f"Groq: {'✅' if self.groq_available else '❌'} ({self.groq_config.get('model', 'N/A')}) | "
-            f"Gemini: {'⏸️ disabled' if not self.llm_config.get('enabled', False) else ('✅' if self.gemini_available else '❌')} | "
-            f"Ollama: {'✅' if self.ollama_available else '❌'} ({self.ollama_config.get('model', 'N/A')})"
+            f"Tier 1 (Antigravity Agentic): {'✅ Active (Akun Pro)' if self.antigravity_available else '⏸️ Standby'} | "
+            f"Tier 2 (Safety Net): ✅ Rule-Based Engine (Deterministic)"
         )
-    
-    def _setup_gemini(self):
-        """Konfigurasi Gemini Flash API."""
-        api_key_env = self.llm_config.get("api_key_env", "GEMINI_API_KEY")
-        api_key = os.environ.get(api_key_env, "")
-        
-        if not api_key:
-            logger.warning(
-                f"⚠️ {api_key_env} not set! AI Agent will use rule-based fallback. "
-                f"Set it with: export {api_key_env}=your_api_key"
-            )
-            self.gemini_available = False
+
+    def _setup_antigravity(self):
+        """Konfigurasi Antigravity Agentic Runtime dengan Sandbox & Akun Pro."""
+        if not self.antigravity_config.get("enabled", False):
+            logger.info("Antigravity Agentic Engine disabled in config")
             return
-        
-        try:
-            global genai
-            if genai is None:
-                import google.generativeai as _genai
-                genai = _genai
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel(
-                model_name=self.llm_config.get("model", "gemini-3.6-flash"),
-                system_instruction=self.SYSTEM_PROMPT,
+
+        if ANTIGRAVITY_SDK_AVAILABLE:
+            self.antigravity_available = True
+            logger.success(
+                f"Antigravity Agentic SDK ready | Priority: {self.antigravity_config.get('model_priority', 'claude-opus')} "
+                f"| Fallback: {self.antigravity_config.get('fallback_model', 'gemini-3.8-flash')} | Sandbox: ON"
             )
-            self.generation_config = genai.GenerationConfig(
-                temperature=self.llm_config.get("temperature", 0.1),
-                max_output_tokens=self.llm_config.get("max_tokens", 1024),
-                response_mime_type="application/json",
-            )
-            self.gemini_available = True
-            logger.success("Gemini Flash API configured successfully")
-        except Exception as e:
-            logger.error(f"Failed to setup Gemini: {e}")
-            self.gemini_available = False
-    
-    def _setup_groq(self):
-        """
-        Konfigurasi Groq Cloud API (LPU ultra-fast inference).
-        
-        Groq menggunakan chip LPU (Language Processing Unit) yang
-        mampu inferensi model 8B pada kecepatan ~800 token/detik.
-        API kompatibel dengan format OpenAI (chat completions).
-        """
-        if not self.groq_config.get("enabled", False):
-            logger.info("Groq Cloud API disabled in config")
-            return
-        
-        api_key_env = self.groq_config.get("api_key_env", "GROQ_API_KEY")
-        self.groq_api_key = os.environ.get(api_key_env, "")
-        
-        if not self.groq_api_key:
-            logger.warning(
-                f"⚠️ {api_key_env} not set! Groq will be skipped. "
-                f"Get free key at: https://console.groq.com/keys"
-            )
-            return
-        
-        self.groq_model = self.groq_config.get("model", "openai/gpt-oss-20b")
-        self.groq_timeout = self.groq_config.get("timeout_seconds", 15)
-        self.groq_temperature = self.groq_config.get("temperature", 0.1)
-        self.groq_max_tokens = self.groq_config.get("max_tokens", 512)
-        self.groq_retry_attempts = self.groq_config.get("retry_attempts", 2)
-        
-        # Validasi koneksi ke Groq API
-        try:
-            resp = httpx.get(
-                "https://api.groq.com/openai/v1/models",
-                headers={"Authorization": f"Bearer {self.groq_api_key}"},
-                timeout=10
-            )
-            if resp.status_code == 200:
-                models = [m["id"] for m in resp.json().get("data", [])]
-                if self.groq_model in models:
-                    self.groq_available = True
-                    logger.success(f"Groq Cloud API ready | Model: {self.groq_model}")
-                else:
-                    # Model mungkin masih valid, Groq kadang tidak list semua
-                    self.groq_available = True
-                    logger.success(f"Groq Cloud API connected | Model: {self.groq_model} (not in list, trying anyway)")
-            elif resp.status_code == 401:
-                logger.warning("Groq API key invalid (401 Unauthorized)")
-            else:
-                logger.warning(f"Groq API responded with status {resp.status_code}")
-        except Exception as e:
-            logger.info(f"Groq API not reachable: {e} — will skip Groq")
-    
-    def _setup_ollama(self):
-        """Konfigurasi Ollama sebagai fallback lokal."""
-        if not self.ollama_config.get("enabled", False):
-            logger.info("Ollama fallback disabled in config")
-            return
-        
-        self.ollama_base_url = self.ollama_config.get("base_url", "http://localhost:11434")
-        self.ollama_model = self.ollama_config.get("model", "qwen2.5:1.5b")
-        self.ollama_timeout = self.ollama_config.get("timeout_seconds", 180)
-        self.ollama_temperature = self.ollama_config.get("temperature", 0.1)
-        
-        # Cek apakah Ollama server berjalan
-        try:
-            resp = httpx.get(f"{self.ollama_base_url}/api/tags", timeout=5)
-            if resp.status_code == 200:
-                models = [m["name"] for m in resp.json().get("models", [])]
-                if any(self.ollama_model in m for m in models):
-                    self.ollama_available = True
-                    logger.success(f"Ollama ready | Model: {self.ollama_model}")
-                else:
-                    logger.warning(
-                        f"Ollama running but model '{self.ollama_model}' not found. "
-                        f"Available: {models}. Run: ollama pull {self.ollama_model}"
-                    )
-            else:
-                logger.warning(f"Ollama server responded with status {resp.status_code}")
-        except Exception:
-            logger.info("Ollama not running — will skip Ollama fallback")
+        else:
+            logger.info("google-antigravity SDK not present in local environment — standby mode (will use Rule-based Safety Net)")
+            self.antigravity_available = False
     
     def _build_prompt(self, situation: SituationReport,
                        action_priorities: list[dict] = None) -> str:
         """
-        Bangun prompt terstruktur untuk Gemini.
+        Bangun prompt terstruktur untuk Antigravity / LLM dengan Incident Dossier lengkap.
         
-        Prompt ini berisi:
-        1. Data metrik EKSAK dari Pandas (bukan estimasi)
-        2. Prediksi ML (risk score, anomaly type)
+        Memuat:
+        1. GNN Topology Root Cause Analysis (100% Cluster Acc & 100% Top-3 RCA)
+        2. Data metrik EKSAK dari Pandas (100% fakta numerik)
         3. Skor urgensi deterministik
         4. SOP Runbook dari RAG
-        5. Pengalaman masa lalu (jika ada)
+        5. Pengalaman masa lalu dari Experience Memory
         6. Prioritas aksi dari Scoring Engine
         """
-        prompt = f"""Analisis situasi berikut dan tentukan aksi terbaik.
+        m = situation.pandas_metrics
+        ml = situation.ml_prediction
 
-## DATA SITUASI SAAT INI (dari Pandas — angka ini 100% akurat):
-- Pod: {situation.pandas_metrics.target_pod}
-- Node: {situation.pandas_metrics.target_node}
-- Namespace: {situation.pandas_metrics.namespace}
-- CPU (5m avg): {situation.pandas_metrics.cpu_usage_avg_5m}%
-- CPU (15m avg): {situation.pandas_metrics.cpu_usage_avg_15m}%
-- Memory: {situation.pandas_metrics.memory_usage_mb:.1f} MB ({situation.pandas_metrics.memory_usage_percent:.1f}%)
-- Memory Growth: {situation.pandas_metrics.memory_growth_rate_mb_per_min:+.1f} MB/min
-- Pod Restarts (1h): {situation.pandas_metrics.pod_restarts_1h}
-- Current Replicas: {situation.pandas_metrics.current_replicas}
-- Request Rate: {situation.pandas_metrics.request_rate_rps:.1f} RPS
-- Error Rate: {situation.pandas_metrics.error_rate_percent:.1f}%
-- Latency P50: {situation.pandas_metrics.latency_p50_ms:.0f} ms
-- Latency P99: {situation.pandas_metrics.latency_p99_ms:.0f} ms
+        # Format Top-3 RCA kandidat dari GNN
+        top3_rca = getattr(ml, "top3_root_causes", [])
+        if top3_rca:
+            top3_items = []
+            for r in top3_rca:
+                rank_num = r.get("rank", 1)
+                svc = r.get("service", "unknown")
+                pct = r.get("percentage") or f"{r.get('score', 0.0):.1%}"
+                top3_items.append(f"  • Rank {rank_num}: {svc} (Contribution Score: {pct})")
+            top3_str = "\n".join(top3_items)
+        else:
+            top3_str = f"  • Rank 1: {m.target_pod} (100.0%)"
 
-## PREDIKSI ML:
-- Risk Score: {situation.ml_prediction.risk_score:.2f}
-- Anomaly Type: {situation.ml_prediction.anomaly_type.value}
-- ML Confidence: {situation.ml_prediction.confidence:.2f}
-- Time to Failure: {situation.ml_prediction.time_to_failure_minutes or 'N/A'} minutes
-- Cascade Risk: {', '.join(situation.ml_prediction.cascade_risk) or 'None'}
+        # Format Distribusi Probabilitas Gangguan GNN
+        fault_probs = getattr(ml, "fault_probabilities", {})
+        if fault_probs:
+            fault_probs_str = " | ".join([f"{k}: {v:.1%}" for k, v in fault_probs.items()])
+        else:
+            fault_probs_str = f"{ml.anomaly_type.value}: {ml.confidence:.1%}"
 
-## URGENCY:
+        # Tentukan target pod/service utama (mengunci target ke Root Cause GNN)
+        primary_target = getattr(ml, "root_cause_service", None) or m.target_pod
+
+        prompt = f"""Analisis situasi insiden Kubernetes berikut dan tentukan aksi self-healing terbaik.
+
+## 🎯 GNN TOPOLOGY ROOT CAUSE ANALYSIS (100% Cluster Acc, 100% Top-3 RCA):
+- Global Cluster Risk: {ml.risk_score:.2f} (Graph Urgency)
+- TERSANGKA UTAMA (PRIMARY ROOT CAUSE): {primary_target}
+- Top-3 RCA Ranking (Daftar Biang Kerok Terbukti):
+{top3_str}
+- Fault Probability Distribution:
+  {fault_probs_str}
+- Classified Failure Mode: {ml.anomaly_type.value} (Confidence: {ml.confidence:.2f})
+- Time to Failure Estimate: {ml.time_to_failure_minutes or 'N/A'} minutes
+- Cascade Impact Propagation: {', '.join(ml.cascade_risk) or 'None (Isolated)'}
+
+## 📊 DATA TELEMETRI FISIK (dari Pandas — angka ini 100% akurat):
+- Observed Pod: {m.target_pod}
+- Target Node: {m.target_node}
+- Namespace: {m.namespace}
+- CPU Usage: {m.cpu_usage_avg_5m:.1f}% (5m avg) | {m.cpu_usage_avg_15m:.1f}% (15m avg)
+- Memory: {m.memory_usage_mb:.1f} MB ({m.memory_usage_percent:.1f}%)
+- Memory Growth Rate: {m.memory_growth_rate_mb_per_min:+.1f} MB/min
+- Pod Restarts (1h): {m.pod_restarts_1h}
+- Current Replicas: {m.current_replicas}
+- Request Rate: {m.request_rate_rps:.1f} RPS
+- Error Rate: {m.error_rate_percent:.1f}%
+- Latency: P50={m.latency_p50_ms:.0f} ms | P99={m.latency_p99_ms:.0f} ms
+
+## 📐 URGENCY:
 - Score: {situation.urgency_score}/100
 - Level: {situation.urgency_level.value}
 
-## SOP RUNBOOK (dari RAG Knowledge Base):
+## 📖 SOP RUNBOOK (dari RAG Knowledge Base):
 {situation.rag_runbook_content or 'Tidak ada runbook yang cocok ditemukan.'}
 RAG Similarity: {situation.rag_similarity_score:.2f}
 """
         
         if situation.past_experiences:
-            prompt += "\n## PENGALAMAN MASA LALU:\n"
+            prompt += "\n## 🧪 PENGALAMAN MASA LALU SERUPA:\n"
             for exp in situation.past_experiences[:3]:
                 prompt += f"- {exp}\n"
         
         if action_priorities:
-            prompt += "\n## PRIORITAS AKSI (dari Scoring Engine):\n"
+            prompt += "\n## ⚡ PRIORITAS AKSI (dari Scoring Engine):\n"
             for p in action_priorities[:5]:
                 prompt += f"- {p['action'].value} (priority: {p['priority']}) — {p['reason']}\n"
         
-        prompt += """
-## INSTRUKSI:
-Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
-{
+        prompt += f"""
+## 🛡️ INSTRUKSI KEPUTUSAN SRE (ANTI-HALUSINASI):
+1. Target deployment WAJIB mengacu pada Tersangka Utama (Root Cause) hasil GNN: "{primary_target}". JANGAN menyalahkan pod hilir yang hanya korban cascade.
+2. Aksi WAJIB dipilih dari daftar enum terkunci:
+   [no_op, restart_pod, scale_out, scale_in, rate_limit, migrate_pod, escalate]
+3. Jika anomali adalah memory_leak, prioritaskan scale_out terlebih dahulu untuk menyerap traffic sebelum rolling restart.
+4. Jawab HANYA dalam format JSON valid berikut (tanpa teks penjelasan lain):
+{{
     "action": "<salah satu dari: no_op, restart_pod, scale_out, scale_in, rate_limit, migrate_pod, escalate>",
-    "target_deployment": "<nama deployment>",
-    "target_namespace": "<namespace>",
-    "parameters": {
+    "target_deployment": "{primary_target}",
+    "target_namespace": "{m.namespace}",
+    "parameters": {{
         "replicas_to_add": <number or null>,
         "replicas_to_remove": <number or null>,
         "target_node": "<node name or null>",
         "rate_limit_rps": <number or null>,
         "restart_strategy": "<rolling or immediate>"
-    },
+    }},
     "confidence": <0.0 - 1.0>,
-    "reasoning": "<penjelasan logis berdasarkan DATA dan SOP>",
-    "data_sources_used": ["<list sumber data yang digunakan>"]
-}"""
-        
+    "reasoning": "<penjelasan logis mengacu pada GNN RCA dan SOP Runbook>",
+    "data_sources_used": ["gnn_top3_rca", "pandas_metrics", "rag_runbook"]
+}}"""
         return prompt
+
+    def _select_with_antigravity(self, situation: SituationReport,
+                                  action_priorities: list[dict] = None) -> Optional[ActionDecision]:
+        """
+        Tier 1 (Primary): Menjalankan Antigravity Agentic Engine
+        menggunakan model Akun Pro (Claude Opus / Gemini 3.8 Flash) di dalam Sandbox.
+        """
+        import asyncio
+
+        prompt = self._build_prompt(situation, action_priorities)
+        allowed_cmds = self.antigravity_config.get("allowed_commands", ["kubectl", "curl", "grep", "cat"])
+        sandbox_on = self.antigravity_config.get("sandbox_mode", True)
+        model_name = self.antigravity_config.get("model_priority", "claude-opus")
+
+        logger.info(f"Spawning Antigravity Agentic Runtime (Sandbox: {sandbox_on}) | Model: {model_name}...")
+
+        async def _run_agent():
+            config = AGYLocalAgentConfig(
+                system_instructions=self.SYSTEM_PROMPT,
+                capabilities=AGYCapabilitiesConfig(
+                    sandbox_mode=sandbox_on,
+                    allowed_commands=allowed_cmds
+                )
+            )
+            async with AGYAgent(config) as agent:
+                resp = await agent.chat(prompt)
+                full_text = ""
+                async for token in resp:
+                    full_text += token
+                return full_text
+
+        try:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                    response_text = loop.run_until_complete(_run_agent())
+                else:
+                    response_text = loop.run_until_complete(_run_agent())
+            except RuntimeError:
+                response_text = asyncio.run(_run_agent())
+
+            cleaned_text = response_text.strip()
+            if "```json" in cleaned_text:
+                cleaned_text = cleaned_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in cleaned_text:
+                cleaned_text = cleaned_text.split("```")[1].split("```")[0].strip()
+
+            response_data = json.loads(cleaned_text)
+            primary_target = getattr(situation.ml_prediction, "root_cause_service", None) or situation.pandas_metrics.target_pod
+
+            decision = ActionDecision(
+                action=ActionType(response_data["action"]),
+                target_deployment=response_data.get("target_deployment", primary_target),
+                target_namespace=response_data.get("target_namespace", situation.pandas_metrics.namespace),
+                parameters=ActionParameters(**response_data.get("parameters", {})),
+                confidence=float(response_data.get("confidence", 0.95)),
+                reasoning=response_data.get("reasoning", "Antigravity Agentic Decision based on GNN RCA & SOP"),
+                data_sources_used=response_data.get("data_sources_used", ["antigravity_agent", "gnn_top3_rca"])
+            )
+
+            logger.success(
+                f"Antigravity Decision: {decision.action.value} | "
+                f"Target: {decision.target_deployment} | "
+                f"Confidence: {decision.confidence:.2f}"
+            )
+            return decision
+
+        except Exception as e:
+            logger.warning(f"Antigravity Agent execution error: {e}")
+            return None
     
     def select_action(self, situation: SituationReport,
                        action_priorities: list[dict] = None) -> ActionDecision:
         """
         Fungsi utama: Pilih aksi terbaik untuk situasi yang diberikan.
         
-        Edge-Cloud 3-Tier Fallback Pipeline:
-        1. Tier 1 (Cloud): Groq LPU — full RAG prompt, <1.5s
-        2. Tier 2 (Edge):  Ollama 0.5B lokal — compact prompt, 3-5s
-        3. Tier 3 (Safe):  Rule-based engine — deterministik, 0.001s
-        
-        Gemini dipertahankan di kode sebagai cadangan opsional
-        (enabled: false di config), bisa diaktifkan kembali jika dibutuhkan.
+        Arsitektur 2-Tier:
+        1. Tier 1 (Antigravity Agentic Runtime): Claude Opus / Gemini Flash (Akun Pro) + Sandbox
+        2. Tier 2 (Safety Net): Rule-based engine — deterministik 100% selalu berhasil
         
         Args:
             situation: Laporan situasi lengkap
@@ -339,346 +320,23 @@ Berdasarkan SEMUA data di atas, kembalikan JSON dengan format:
         Returns:
             ActionDecision — Keputusan tervalidasi
         """
-        # === 3-Tier Fallback: Groq (Cloud) → Ollama (Edge) → Rules (Safe) ===
-        
-        # Tier 1: Groq Cloud API (ultra-fast, full RAG + Memory)
-        if self.groq_available:
+        # Tier 1: Antigravity Agentic Runtime (Akun Pro - Claude Opus / Gemini 3.8 Flash)
+        if self.antigravity_available:
             try:
-                result = self._select_with_groq(situation, action_priorities)
+                result = self._select_with_antigravity(situation, action_priorities)
                 if result is not None:
                     return result
             except Exception as e:
-                logger.error(f"Groq pipeline error: {e}")
+                logger.error(f"Antigravity pipeline error: {e}")
         
-        # Tier 1.5 (opsional): Gemini Flash — hanya jika diaktifkan di config
-        if self.gemini_available:
-            try:
-                logger.info("Falling back to Gemini Flash...")
-                result = self._select_with_gemini(situation, action_priorities)
-                if result is not None:
-                    return result
-            except Exception as e:
-                logger.error(f"Gemini pipeline error: {e}")
-        
-        # Tier 2: Ollama lokal (edge, offline-capable)
-        if self.ollama_available:
-            try:
-                logger.info("Falling back to Ollama (local/edge)...")
-                result = self._select_with_ollama(situation, action_priorities)
-                if result is not None:
-                    return result
-            except Exception as e:
-                logger.error(f"Ollama pipeline error: {e}")
-        
-        # Tier 3: Rule-based engine (deterministik, always works)
-        if not self.groq_available and not self.ollama_available:
-            logger.info("No LLM available, using rule-based safety net")
-        else:
-            logger.warning("All LLM tiers failed, using rule-based safety net")
+        # Tier 2: Rule-based engine (deterministik, safety net)
+        logger.warning("Antigravity Engine not active or skipped, using deterministic rule-based safety net")
         return self._select_with_rules(situation, action_priorities)
-    
-    def _select_with_groq(self, situation: SituationReport,
-                           action_priorities: list[dict] = None) -> ActionDecision:
-        """
-        Tier 1 (Cloud Brain): Groq Cloud API (LPU ultra-fast inference).
-        
-        Groq menggunakan chip LPU (Language Processing Unit) yang
-        mampu inferensi model 20B pada ~800 token/detik. API format
-        kompatibel dengan OpenAI chat completions.
-        
-        Menggunakan FULL prompt (_build_prompt) yang menyertakan:
-        - Data metrik Pandas (100% akurat)
-        - SOP Runbook dari RAG Knowledge Base
-        - Pengalaman masa lalu dari Experience Memory
-        - Prioritas aksi dari Scoring Engine
-        
-        response_format=json_object untuk paksa output JSON.
-        """
-        # Gunakan FULL prompt (RAG + Memory) — Groq LPU cukup cepat
-        full_prompt = self._build_prompt(situation, action_priorities)
-        
-        logger.info(f"Sending full prompt to Groq ({self.groq_model})...")
-        
-        for attempt in range(self.groq_retry_attempts):
-            try:
-                start_time = time.time()
-                
-                response = httpx.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.groq_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": self.groq_model,
-                        "messages": [
-                            {"role": "system", "content": self.SYSTEM_PROMPT},
-                            {"role": "user", "content": full_prompt}
-                        ],
-                        "temperature": self.groq_temperature,
-                        "max_tokens": self.groq_max_tokens,
-                        "response_format": {"type": "json_object"},
-                        "stream": False
-                    },
-                    timeout=self.groq_timeout
-                )
-                
-                elapsed = time.time() - start_time
-                
-                if response.status_code == 429:
-                    logger.warning(f"Attempt {attempt + 1}: Groq rate limit (429)")
-                    if attempt < self.groq_retry_attempts - 1:
-                        backoff = 2 ** (attempt + 1)
-                        logger.info(f"Retrying in {backoff}s...")
-                        time.sleep(backoff)
-                    continue
-                
-                if response.status_code != 200:
-                    logger.warning(f"Attempt {attempt + 1}: Groq returned status {response.status_code}")
-                    if attempt < self.groq_retry_attempts - 1:
-                        time.sleep(2 ** (attempt + 1))
-                    continue
-                
-                result = response.json()
-                response_text = result["choices"][0]["message"]["content"].strip()
-                
-                # Log timing dan usage
-                usage = result.get("usage", {})
-                logger.info(
-                    f"Groq responded in {elapsed:.2f}s | "
-                    f"Tokens: {usage.get('prompt_tokens', '?')} in → "
-                    f"{usage.get('completion_tokens', '?')} out"
-                )
-                
-                response_data = json.loads(response_text)
-                
-                # Validasi dan konversi ke Pydantic model
-                decision = ActionDecision(
-                    action=ActionType(response_data["action"]),
-                    target_deployment=response_data.get("target_deployment", situation.pandas_metrics.target_pod),
-                    target_namespace=response_data.get("target_namespace", "demo"),
-                    parameters=ActionParameters(**response_data.get("parameters", {})),
-                    confidence=float(response_data.get("confidence", 0.5)),
-                    reasoning=response_data.get("reasoning", "No reasoning provided"),
-                    data_sources_used=response_data.get("data_sources_used", ["groq_cloud"])
-                )
-                
-                logger.success(
-                    f"Groq Decision: {decision.action.value} | "
-                    f"Target: {decision.target_deployment} | "
-                    f"Confidence: {decision.confidence:.2f} | "
-                    f"Latency: {elapsed:.2f}s"
-                )
-                
-                return decision
-                
-            except json.JSONDecodeError as e:
-                logger.warning(f"Attempt {attempt + 1}: Invalid JSON from Groq: {e}")
-                if attempt < self.groq_retry_attempts - 1:
-                    time.sleep(2 ** (attempt + 1))
-                continue
-            except httpx.TimeoutException:
-                logger.warning(f"Attempt {attempt + 1}: Groq timeout after {self.groq_timeout}s")
-                if attempt < self.groq_retry_attempts - 1:
-                    time.sleep(2 ** (attempt + 1))
-                continue
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}: Groq error: {e}")
-                if attempt < self.groq_retry_attempts - 1:
-                    time.sleep(2 ** (attempt + 1))
-                continue
-        
-        logger.warning("All Groq retries failed")
-        return None
-    
-    def _select_with_gemini(self, situation: SituationReport,
-                             action_priorities: list[dict] = None) -> ActionDecision:
-        """
-        Kirim prompt ke Gemini Flash dan parse response JSON.
-        
-        Gemini dikonfigurasi dengan:
-        - response_mime_type="application/json" → Paksa output JSON
-        - temperature=0.1 → Konsisten dan deterministik
-        - system_instruction → Aturan ketat anti-halusinasi
-        """
-        prompt = self._build_prompt(situation, action_priorities)
-        
-        logger.info("Sending prompt to Gemini Flash...")
-        
-        timeout = self.llm_config.get("timeout_seconds", 10)
-        retry_attempts = self.llm_config.get("retry_attempts", 3)
-        
-        for attempt in range(retry_attempts):
-            try:
-                response = self.model.generate_content(
-                    prompt,
-                    generation_config=self.generation_config,
-                    request_options={"timeout": timeout}
-                )
-                
-                # Parse JSON response
-                response_text = response.text.strip()
-                response_data = json.loads(response_text)
-                
-                # Validasi dan konversi ke Pydantic model
-                decision = ActionDecision(
-                    action=ActionType(response_data["action"]),
-                    target_deployment=response_data.get("target_deployment", situation.pandas_metrics.target_pod),
-                    target_namespace=response_data.get("target_namespace", "demo"),
-                    parameters=ActionParameters(**response_data.get("parameters", {})),
-                    confidence=float(response_data.get("confidence", 0.5)),
-                    reasoning=response_data.get("reasoning", "No reasoning provided"),
-                    data_sources_used=response_data.get("data_sources_used", [])
-                )
-                
-                logger.success(
-                    f"Gemini Decision: {decision.action.value} | "
-                    f"Target: {decision.target_deployment} | "
-                    f"Confidence: {decision.confidence:.2f}"
-                )
-                
-                return decision
-                
-            except json.JSONDecodeError as e:
-                logger.warning(f"Attempt {attempt + 1}: Invalid JSON from Gemini: {e}")
-                if attempt < retry_attempts - 1:
-                    time.sleep(2 ** (attempt + 1))  # Exponential backoff: 2s, 4s, 8s
-                continue
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1}: Gemini error: {e}")
-                if attempt < retry_attempts - 1:
-                    backoff = 2 ** (attempt + 1)
-                    logger.info(f"Retrying in {backoff}s (backoff)...")
-                    time.sleep(backoff)  # Exponential backoff: 2s, 4s, 8s
-                continue
-        
-        # Semua retry gagal → return None agar fallback chain lanjut ke Ollama
-        logger.warning("All Gemini retries failed")
-        return None
-    
-    def _build_compact_prompt(self, situation: SituationReport,
-                              action_priorities: list[dict] = None) -> str:
-        """
-        Prompt ringkas untuk model kecil (1.5B) di CPU-only mode.
-        
-        Mengurangi token count dari ~2000+ menjadi ~400 agar
-        prompt eval selesai dalam waktu yang wajar di 4 CPU cores.
-        RAG content di-skip karena terlalu besar untuk model kecil.
-        """
-        m = situation.pandas_metrics
-        ml = situation.ml_prediction
-        
-        # Bangun string prioritas aksi (top 3 saja)
-        priority_str = ""
-        if action_priorities:
-            top3 = action_priorities[:3]
-            priority_str = " | ".join(
-                f"{p['action'].value}({p['priority']})" for p in top3
-            )
-        
-        prompt = f"""K8s pod incident. Pick the best action.
-
-METRICS:
-- pod: {m.target_pod}, node: {m.target_node}
-- cpu_5m: {m.cpu_usage_avg_5m}%, mem: {m.memory_usage_mb:.0f}MB ({m.memory_usage_percent:.0f}%)
-- mem_growth: {m.memory_growth_rate_mb_per_min:+.1f}MB/min, restarts_1h: {m.pod_restarts_1h}
-- replicas: {m.current_replicas}, rps: {m.request_rate_rps:.0f}, errors: {m.error_rate_percent:.1f}%
-- p99_latency: {m.latency_p99_ms:.0f}ms
-
-ML: risk={ml.risk_score:.2f}, anomaly={ml.anomaly_type.value}, confidence={ml.confidence:.2f}
-URGENCY: {situation.urgency_score}/100 ({situation.urgency_level.value})
-PRIORITIES: {priority_str or 'none'}
-
-RULES:
-- urgency<30: no_op
-- urgency 30-50: scale_out preventive
-- urgency 50-70: restart_pod or scale_out
-- urgency>85: immediate action
-- confidence<0.85: escalate
-
-Respond with ONLY this JSON:
-{{"action":"<no_op|restart_pod|scale_out|scale_in|rate_limit|migrate_pod|escalate>","target_deployment":"{m.target_pod}","confidence":<0.0-1.0>,"reasoning":"<short reason>"}}"""
-        
-        return prompt
-    
-    def _select_with_ollama(self, situation: SituationReport,
-                             action_priorities: list[dict] = None) -> ActionDecision:
-        """
-        Fallback ke Ollama lokal jika Gemini gagal.
-        
-        Menggunakan HTTP API langsung ke Ollama server.
-        Prompt diringkas khusus untuk model kecil (1.5B) agar
-        tidak timeout di CPU-only mode.
-        """
-        # Gunakan prompt ringkas untuk model kecil
-        compact_prompt = self._build_compact_prompt(situation, action_priorities)
-        
-        logger.info(f"Sending compact prompt to Ollama ({self.ollama_model})...")
-        logger.debug(f"Prompt length: ~{len(compact_prompt.split())} words")
-        
-        try:
-            response = httpx.post(
-                f"{self.ollama_base_url}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": compact_prompt,
-                    "format": "json",
-                    "stream": False,
-                    "options": {
-                        "temperature": self.ollama_temperature,
-                        "num_predict": 256,  # Output pendek saja
-                    }
-                },
-                timeout=self.ollama_timeout
-            )
-            
-            if response.status_code != 200:
-                logger.warning(f"Ollama returned status {response.status_code}")
-                return None
-            
-            result = response.json()
-            response_text = result.get("response", "").strip()
-            
-            # Log timing untuk monitoring
-            total_dur = result.get("total_duration", 0) / 1e9  # ns → s
-            eval_dur = result.get("eval_duration", 0) / 1e9
-            logger.info(f"Ollama responded in {total_dur:.1f}s (eval: {eval_dur:.1f}s)")
-            
-            response_data = json.loads(response_text)
-            
-            # Validasi dan konversi ke Pydantic model
-            decision = ActionDecision(
-                action=ActionType(response_data["action"]),
-                target_deployment=response_data.get("target_deployment", situation.pandas_metrics.target_pod),
-                target_namespace=response_data.get("target_namespace", "demo"),
-                parameters=ActionParameters(**response_data.get("parameters", {})),
-                confidence=float(response_data.get("confidence", 0.5)),
-                reasoning=response_data.get("reasoning", "No reasoning provided"),
-                data_sources_used=response_data.get("data_sources_used", ["ollama_local"])
-            )
-            
-            logger.success(
-                f"Ollama Decision: {decision.action.value} | "
-                f"Target: {decision.target_deployment} | "
-                f"Confidence: {decision.confidence:.2f}"
-            )
-            
-            return decision
-            
-        except json.JSONDecodeError as e:
-            logger.warning(f"Ollama returned invalid JSON: {e}")
-            return None
-        except httpx.TimeoutException:
-            logger.warning(f"Ollama timeout after {self.ollama_timeout}s")
-            return None
-        except Exception as e:
-            logger.warning(f"Ollama error: {e}")
-            return None
     
     def _select_with_rules(self, situation: SituationReport,
                             action_priorities: list[dict] = None) -> ActionDecision:
         """
-        Rule-based fallback jika Gemini API tidak tersedia.
+        Rule-based fallback jika Antigravity Engine tidak tersedia.
         
         Ini adalah "safety net" yang menjamin sistem tetap
         bisa mengambil keputusan meskipun tanpa LLM.

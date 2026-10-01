@@ -13,7 +13,7 @@
 # ============================================================
 
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
@@ -54,12 +54,15 @@ class AnomalyType(str, Enum):
 
 # --- Input Schemas (Data yang masuk ke AI Agent) ---
 class MLPrediction(BaseModel):
-    """Output dari ML Prediction model (Layer 3)."""
-    risk_score: float = Field(..., ge=0.0, le=1.0, description="Skor risiko 0.0-1.0")
+    """Output dari ML Prediction model (Layer 2 & Layer 3)."""
+    risk_score: float = Field(..., ge=0.0, le=1.0, description="Skor risiko kluster 0.0-1.0")
     anomaly_type: AnomalyType = Field(..., description="Jenis anomali terdeteksi")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level model")
+    root_cause_service: Optional[str] = Field(None, description="Service/pod tersangka utama dari GNN Top-3 RCA")
+    top3_root_causes: List[Dict[str, Any]] = Field(default_factory=list, description="Top-3 kandidat root cause beserta skor ranking")
+    fault_probabilities: Dict[str, float] = Field(default_factory=dict, description="Distribusi probabilitas anomali dari GNN")
     time_to_failure_minutes: Optional[float] = Field(None, description="Estimasi waktu crash")
-    cascade_risk: List[str] = Field(default_factory=list, description="Pod yang terdampak")
+    cascade_risk: List[str] = Field(default_factory=list, description="Pod hilir yang terdampak efek domino")
 
 
 class PandasMetrics(BaseModel):

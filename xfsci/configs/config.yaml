@@ -160,35 +160,22 @@ rl_agent:
 
 # --- AI Agent (Layer 4 Primary: Pengganti RL di Produksi) ---
 ai_agent:
-  # Gemini Flash (DISABLED — digantikan oleh Groq yang lebih cepat & stabil)
-  llm:
-    enabled: false               # ← Dimatikan: deprecated SDK, 5 RPM limit, sering 504/429
-    provider: "gemini"           # gemini | openai | ollama
-    model: "gemini-3.6-flash"    # Model Gemini Flash (gratis, cepat)
-    api_key_env: "GEMINI_API_KEY"  # Nama env variable untuk API key
-    temperature: 0.1             # Rendah = konsisten & deterministik
-    max_tokens: 1024
-    timeout_seconds: 30          # Free tier butuh waktu lebih lama
+  # Antigravity Agentic Runtime (PRIMARY - Terintegrasi Akun Pro & Sandbox)
+  # Menggunakan model Claude Opus / Gemini 3.8 Flash dari langganan Pro Anda
+  antigravity:
+    enabled: true
+    model_priority: "claude-opus"        # Prioritas: Claude Opus untuk deep reasoning
+    fallback_model: "gemini-3.8-flash"   # Fallback: Gemini Flash saat Opus cooldown
+    sandbox_mode: true                   # Enforce execution inside protected sandbox
+    allowed_commands:
+      - "kubectl"
+      - "curl"
+      - "cat"
+      - "grep"
+      - "bash"
+    timeout_seconds: 45
     retry_attempts: 2
 
-  # Groq Cloud API (PRIMARY — ultra-fast LPU inference, 30 RPM free)
-  # Fallback chain: Groq (cloud) → Ollama (lokal/edge) → Rule-based (deterministik)
-  groq:
-    enabled: true
-    api_key_env: "GROQ_API_KEY"         # export GROQ_API_KEY=gsk_xxx
-    model: "openai/gpt-oss-20b"         # Official Groq recommendation, ~800 tok/s on Groq LPU
-    temperature: 0.1
-    max_tokens: 1024                    # Dinaikkan: Groq sekarang baca full RAG + Memory prompt
-    timeout_seconds: 15                 # Groq biasanya < 1.5 detik (termasuk full prompt)
-    retry_attempts: 2
-
-  # Ollama Local Fallback (jika semua cloud gagal)
-  ollama:
-    enabled: true
-    base_url: "http://172.20.0.104:11434"  # Ollama di Master Node
-    model: "qwen2.5:0.5b"              # Model ultra-ringan (~500MB RAM, 3-6s di CPU)
-    timeout_seconds: 60                 # 0.5B cukup cepat, 60s sudah aman
-    temperature: 0.1
 
   # Action Space (sama dengan RL, tapi terkunci via Pydantic schema)
   actions:

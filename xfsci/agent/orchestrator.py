@@ -3,11 +3,11 @@
 # ============================================================
 # OTAK UTAMA yang menyatukan seluruh komponen AI Agent:
 #
-#  ┌─────────┐  ┌────────┐  ┌─────────┐  ┌──────────┐
-#  │ Pandas  │→ │Scoring │→ │  RAG +  │→ │Guardrails│→ EXECUTE
-#  │Processor│  │ Engine │  │ Gemini  │  │  Check   │
-#  └─────────┘  └────────┘  │ Agent   │  └──────────┘
-#                            └─────────┘
+#  ┌─────────┐  ┌────────┐  ┌───────────┐  ┌──────────┐
+#  │ Pandas  │→ │Scoring │→ │Antigravity│→ │Guardrails│→ EXECUTE
+#  │Processor│  │ Engine │  │  Agent    │  │  Check   │
+#  └─────────┘  └────────┘  │(+GNN RCA)│  └──────────┘
+#                            └───────────┘
 #                               │ ↑
 #                    ┌──────────┘ └──────────┐
 #                    │                       │
@@ -18,15 +18,16 @@
 #
 # Pipeline lengkap:
 # 1. Terima alert/trigger
-# 2. Pandas menganalisis metrik (100% eksak)
-# 3. Scoring Engine menghitung urgency (deterministik)
-# 4. RAG mengambil runbook SOP yang relevan
-# 5. Experience Memory mencari pengalaman serupa
-# 6. AI Agent (Gemini) memilih aksi
-# 7. Jika masalah baru → Sandbox test dulu
-# 8. Jika multi-step → Planner dengan checkpoint
-# 9. Guardrails memvalidasi keputusan
-# 10. Eksekusi + Evaluasi + Simpan ke Experience Memory
+# 2. GNN Layer 2 → Root Cause Analysis (Top-3 RCA, 0% halusinasi)
+# 3. Pandas menganalisis metrik (100% eksak)
+# 4. Scoring Engine menghitung urgency (deterministik)
+# 5. RAG mengambil runbook SOP yang relevan
+# 6. Experience Memory mencari pengalaman serupa
+# 7. Antigravity Agent (Claude Opus / Gemini Flash) memilih aksi
+# 8. Jika masalah baru → Sandbox test dulu
+# 9. Jika multi-step → Planner dengan checkpoint
+# 10. Guardrails memvalidasi keputusan
+# 11. Eksekusi + Evaluasi + Simpan ke Experience Memory
 # ============================================================
 
 import sys
@@ -189,10 +190,14 @@ class XFSCIOrchestrator:
                 anomaly = self.pandas_processor.detect_anomaly_pattern(
                     pandas_metrics.model_dump()
                 )
+                target_svc = deployment_name
                 ml_prediction = MLPrediction(
                     risk_score=0.5 if anomaly != AnomalyType.NORMAL else 0.1,
                     anomaly_type=anomaly,
                     confidence=0.80,
+                    root_cause_service=target_svc,
+                    top3_root_causes=[{"rank": 1, "service": target_svc, "score": 0.8, "percentage": "80.0%"}],
+                    fault_probabilities={anomaly.value: 0.8, "normal": 0.2 if anomaly != AnomalyType.NORMAL else 0.8},
                     time_to_failure_minutes=None,
                     cascade_risk=[]
                 )

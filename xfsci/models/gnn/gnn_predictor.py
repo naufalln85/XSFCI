@@ -7,7 +7,7 @@ Modul inferensi real-time untuk GNN (DualHeadGATv2):
   2. Mengonstruksi tensor fitur [11, 18] dari metrik pod cluster
   3. Menjalankan forward pass GNN (< 3ms di CPU)
   4. Menghasilkan objek MLPrediction (Action Schema) yang siap
-     dikonsumsi langsung oleh Orchestrator & Decision Agent (Groq).
+      dikonsumsi langsung oleh Orchestrator & Decision Agent (Antigravity).
 
 Fitur Diagnosis:
   - Root Cause Localization (Pod mana yang menjadi sumber anomali)
@@ -188,6 +188,9 @@ class GNNPredictor:
                 risk_score=0.1,
                 anomaly_type=AnomalyType.NORMAL,
                 confidence=0.80,
+                root_cause_service=target_svc,
+                top3_root_causes=[{"rank": 1, "service": target_svc, "score": 0.1, "percentage": "10.0%"}],
+                fault_probabilities={"normal": 0.9, "cpu_overload": 0.025, "memory_leak": 0.025, "pod_crash_loop": 0.025, "network_latency": 0.025},
                 time_to_failure_minutes=None,
                 cascade_risk=[]
             )
@@ -222,12 +225,12 @@ class GNNPredictor:
         idx_net_asym = _sorted_feats.index("net_asymmetry_norm")
 
         # Diagnosis Target Pod (Hierarchical Gated + Physical Guardrails V2)
+        target_probs = node_probs[target_idx].cpu().numpy().copy()
         if cluster_risk < 0.50:
             pred_label_id = 0
             confidence = float(1.0 - cluster_risk)
             anomaly_type = AnomalyType.NORMAL
         else:
-            target_probs = node_probs[target_idx].cpu().numpy().copy()
             # Physical Guardrail V2 checks on target pod:
             if raw_features[target_idx, idx_pod_restarts] == 0 and raw_features[target_idx, idx_restart_delta] == 0:
                 target_probs[3] = 0.0  # Hapus kemungkinan Pod Crash
@@ -242,6 +245,12 @@ class GNNPredictor:
             confidence = float(target_probs[pred_label_id])
             anomaly_type = GNN_LABEL_TO_ANOMALY_TYPE.get(pred_label_id, AnomalyType.NORMAL)
 
+        # Fault probabilities distribution
+        fault_probs_dict = {
+            a_type.value: round(float(target_probs[lbl_id]), 3)
+            for lbl_id, a_type in GNN_LABEL_TO_ANOMALY_TYPE.items()
+        }
+
         # Root Cause Analysis V2: Hybrid scoring (GNN + Enriched Local Features)
         gnn_anomaly = 1.0 - node_probs[:, 0].cpu().numpy()
         local_scores = (
@@ -253,7 +262,21 @@ class GNNPredictor:
         )
         # Hybrid: 25% GNN + 75% lokal (mengatasi graph contamination)
         hybrid_scores = 0.25 * gnn_anomaly + 0.75 * local_scores
-        root_cause_idx = int(np.argmax(hybrid_scores))
+        
+        # Hitung Top-3 RCA Candidates secara eksplisit untuk dikirim ke Antigravity
+        sorted_indices = np.argsort(hybrid_scores)[::-1]
+        top3_rca = []
+        for rank, s_idx in enumerate(sorted_indices[:3]):
+            svc_name = IDX_TO_SERVICE[int(s_idx)]
+            score_val = float(hybrid_scores[s_idx])
+            top3_rca.append({
+                "rank": rank + 1,
+                "service": svc_name,
+                "score": round(score_val, 3),
+                "percentage": f"{score_val:.1%}"
+            })
+
+        root_cause_idx = int(sorted_indices[0])
         root_cause_svc = IDX_TO_SERVICE[root_cause_idx]
         root_cause_score = float(hybrid_scores[root_cause_idx])
 
@@ -264,12 +287,16 @@ class GNNPredictor:
                 cascade_pods.append(f"{svc} ({hybrid_scores[idx]:.0%})")
 
         logger.info(f"🧠 GNN Inference [{elapsed_ms:.2f}ms] | Target: {target_svc} -> {anomaly_type.value} "
-                    f"({confidence:.0%}) | Cluster Risk: {cluster_risk:.2f} | Root Cause: {root_cause_svc} ({root_cause_score:.0%})")
+                    f"({confidence:.0%}) | Cluster Risk: {cluster_risk:.2f} | Root Cause: {root_cause_svc} ({root_cause_score:.0%}) "
+                    f"| Top-3 RCA: {[r['service'] + ' (' + r['percentage'] + ')' for r in top3_rca]}")
 
         return MLPrediction(
             risk_score=round(cluster_risk, 3),
             anomaly_type=anomaly_type,
             confidence=round(confidence, 3),
+            root_cause_service=root_cause_svc,
+            top3_root_causes=top3_rca,
+            fault_probabilities=fault_probs_dict,
             time_to_failure_minutes=5.0 if anomaly_type != AnomalyType.NORMAL else None,
             cascade_risk=cascade_pods
         )

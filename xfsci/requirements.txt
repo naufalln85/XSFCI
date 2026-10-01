@@ -22,13 +22,10 @@ torch-geometric>=2.4.0
 gymnasium>=0.29.0
 stable-baselines3>=2.1.0
 
-# --- AI Agent (Layer 4 Primary: Gemini + RAG) ---
-google-generativeai>=0.3.0     # Gemini Flash API
+# --- AI Agent (Layer 4 Primary: Antigravity Agentic Runtime + RAG) ---
+google-antigravity             # Antigravity Agentic Runtime (Akun Pro)
 chromadb>=0.4.0                # Vector store untuk RAG
 sentence-transformers>=2.2.0   # Embedding model (all-MiniLM-L6-v2)
-langchain>=0.1.0               # AI Agent framework
-langchain-google-genai>=1.0.0  # Langchain Gemini integration
-langchain-community>=0.0.10   # Community vector store integrations
 
 # --- Precision Optimizer (ML Regression) ---
 xgboost>=2.0.0

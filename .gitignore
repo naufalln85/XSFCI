@@ -44,8 +44,10 @@ yarn-error.log*
 *~
 .DS_Store
 
-# Antigravity agents folder
-.agents/
+# Antigravity agents folder (preserve custom skills & rules)
+.agents/*
+!.agents/skills/
+!.agents/rules/
 
 # Sensitive files
 .env

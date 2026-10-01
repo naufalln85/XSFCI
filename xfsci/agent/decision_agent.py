@@ -110,7 +110,7 @@ PRIORITAS KEAMANAN:
 
     def _setup_antigravity(self):
         """Konfigurasi Antigravity Agentic Runtime dengan Sandbox & Akun Pro."""
-        if not self.antigravity_config.get("enabled", False):
+        if not self.antigravity_config.get("enabled", True):
             logger.info("Antigravity Agentic Engine disabled in config")
             return
 
@@ -236,25 +236,32 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
                                   action_priorities: list[dict] = None) -> Optional[ActionDecision]:
         """
         Tier 1 (Primary): Menjalankan Antigravity Agentic Engine
-        menggunakan model Akun Pro (Claude Opus / Gemini 3.8 Flash) di dalam Sandbox.
+        menggunakan model Akun Pro dengan fitur AUTO-SWITCH:
+        1. Model Prioritas: Claude Opus (Deep reasoning SRE)
+        2. Auto-Switch Fallback: Gemini 3.8 Flash (High-speed SRE) jika Opus limit/error
+        3. Sandbox: Eksekusi tervendor di lingkungan aman
         """
         import asyncio
 
         prompt = self._build_prompt(situation, action_priorities)
-        allowed_cmds = self.antigravity_config.get("allowed_commands", ["kubectl", "curl", "grep", "cat"])
+        allowed_cmds = self.antigravity_config.get("allowed_commands", ["kubectl", "curl", "grep", "cat", "sh"])
         sandbox_on = self.antigravity_config.get("sandbox_mode", True)
-        model_name = self.antigravity_config.get("model_priority", "claude-opus")
+        primary_model = self.antigravity_config.get("model_priority", "claude-opus")
+        fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.8-flash")
 
-        logger.info(f"Spawning Antigravity Agentic Runtime (Sandbox: {sandbox_on}) | Model: {model_name}...")
-
-        async def _run_agent():
-            config = AGYLocalAgentConfig(
-                system_instructions=self.SYSTEM_PROMPT,
-                capabilities=AGYCapabilitiesConfig(
+        async def _call_model(model_name: str) -> str:
+            agent_kwargs = {
+                "system_instructions": self.SYSTEM_PROMPT,
+                "capabilities": AGYCapabilitiesConfig(
                     sandbox_mode=sandbox_on,
                     allowed_commands=allowed_cmds
                 )
-            )
+            }
+            try:
+                config = AGYLocalAgentConfig(model=model_name, **agent_kwargs)
+            except TypeError:
+                config = AGYLocalAgentConfig(**agent_kwargs)
+
             async with AGYAgent(config) as agent:
                 resp = await agent.chat(prompt)
                 full_text = ""
@@ -262,18 +269,44 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
                     full_text += token
                 return full_text
 
-        try:
+        def _execute_async(coro):
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     import nest_asyncio
                     nest_asyncio.apply()
-                    response_text = loop.run_until_complete(_run_agent())
+                    return loop.run_until_complete(coro)
                 else:
-                    response_text = loop.run_until_complete(_run_agent())
+                    return loop.run_until_complete(coro)
             except RuntimeError:
-                response_text = asyncio.run(_run_agent())
+                return asyncio.run(coro)
 
+        response_text = None
+        model_used = primary_model
+
+        # 1. Coba Model Prioritas Pertama (Claude Opus)
+        try:
+            logger.info(f"🚀 [Antigravity SRE] Memanggil Model Prioritas: {primary_model} (Sandbox: {sandbox_on})...")
+            response_text = _execute_async(_call_model(primary_model))
+            logger.success(f"✅ Berhasil mendapat respon dari model {primary_model}!")
+        except Exception as e_opus:
+            logger.warning(
+                f"⚠️ Model prioritas '{primary_model}' menemui kendala ({e_opus}). "
+                f"🔄 AUTO-SWITCHING ke Fallback Model: '{fallback_model}'..."
+            )
+            model_used = fallback_model
+            # 2. Auto-Switch ke Fallback Model (Gemini 3.8 Flash)
+            try:
+                response_text = _execute_async(_call_model(fallback_model))
+                logger.success(f"✅ Berhasil mendapat respon dari Fallback Model: {fallback_model}!")
+            except Exception as e_gemini:
+                logger.error(f"❌ Fallback Model '{fallback_model}' juga gagal: {e_gemini}")
+                return None
+
+        if not response_text:
+            return None
+
+        try:
             cleaned_text = response_text.strip()
             if "```json" in cleaned_text:
                 cleaned_text = cleaned_text.split("```json")[1].split("```")[0].strip()
@@ -289,19 +322,19 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
                 target_namespace=response_data.get("target_namespace", situation.pandas_metrics.namespace),
                 parameters=ActionParameters(**response_data.get("parameters", {})),
                 confidence=float(response_data.get("confidence", 0.95)),
-                reasoning=response_data.get("reasoning", "Antigravity Agentic Decision based on GNN RCA & SOP"),
-                data_sources_used=response_data.get("data_sources_used", ["antigravity_agent", "gnn_top3_rca"])
+                reasoning=response_data.get("reasoning", f"Antigravity Agentic Decision [{model_used}] based on GNN RCA & SOP"),
+                data_sources_used=response_data.get("data_sources_used", [f"antigravity_{model_used}", "gnn_top3_rca"])
             )
 
             logger.success(
-                f"Antigravity Decision: {decision.action.value} | "
+                f"Antigravity Decision ({model_used}): {decision.action.value} | "
                 f"Target: {decision.target_deployment} | "
                 f"Confidence: {decision.confidence:.2f}"
             )
             return decision
 
         except Exception as e:
-            logger.warning(f"Antigravity Agent execution error: {e}")
+            logger.warning(f"Error parsing Antigravity response ({model_used}): {e}")
             return None
     
     def select_action(self, situation: SituationReport,

@@ -161,22 +161,19 @@ rl_agent:
 # --- AI Agent (Layer 4 Primary: Pengganti RL di Produksi) ---
 ai_agent:
   # Antigravity Agentic Runtime (PRIMARY - Terintegrasi Akun Pro & Sandbox)
-  # Model tersedia dari `agy models`: gemini-3.8-flash, gemini-3.7-flash
-  # CLI membutuhkan --model dan --effort sebagai flag terpisah
+  # Slug model diambil PERSIS dari output `agy models` di VM5
   antigravity:
     enabled: true
-    model_priority: "gemini-3.8-flash"   # Model utama: Gemini 3.8 Flash
-    effort_priority: "high"              # Effort level: high (best quality)
-    fallback_model: "gemini-3.7-flash"   # Fallback: Gemini 3.7 Flash (lebih cepat)
-    effort_fallback: "high"              # Effort level fallback
-    sandbox_mode: true                   # Enforce execution inside protected sandbox
+    model_priority: "claude-opus-4-6-thinking"   # Prioritas: Claude Opus 4.6 (Thinking) — Deep SRE Reasoning
+    fallback_model: "gemini-3.8-flash-high"      # Fallback: Gemini 3.8 Flash (High) — Cepat & handal
+    sandbox_mode: true                           # Enforce execution inside protected sandbox
     allowed_commands:
       - "kubectl"
       - "curl"
       - "cat"
       - "grep"
       - "bash"
-    timeout_seconds: 60
+    timeout_seconds: 90
     retry_attempts: 2
 
 

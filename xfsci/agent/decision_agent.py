@@ -110,7 +110,7 @@ PRIORITAS KEAMANAN:
 
     def _setup_antigravity(self):
         """Konfigurasi Antigravity Agentic Runtime dengan Sandbox & Akun Pro."""
-        if not self.antigravity_config.get("enabled", True):
+        if not self.antigravity_config.get("enabled", False):
             logger.info("Antigravity Agentic Engine disabled in config")
             return
 
@@ -250,24 +250,32 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
         fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.8-flash")
 
         async def _call_model(model_name: str) -> str:
-            agent_kwargs = {
-                "system_instructions": self.SYSTEM_PROMPT,
-                "capabilities": AGYCapabilitiesConfig(
-                    sandbox_mode=sandbox_on,
-                    allowed_commands=allowed_cmds
-                )
-            }
-            try:
-                config = AGYLocalAgentConfig(model=model_name, **agent_kwargs)
-            except TypeError:
-                config = AGYLocalAgentConfig(**agent_kwargs)
+            # Set model via environment variable — ini cara paling reliable
+            # untuk menginstruksikan Antigravity SDK menggunakan model tertentu.
+            # SDK membaca ANTIGRAVITY_MODEL saat spawn agent binary.
+            prev_model = os.environ.get("ANTIGRAVITY_MODEL")
+            os.environ["ANTIGRAVITY_MODEL"] = model_name
 
-            async with AGYAgent(config) as agent:
-                resp = await agent.chat(prompt)
-                full_text = ""
-                async for token in resp:
-                    full_text += token
-                return full_text
+            try:
+                config = AGYLocalAgentConfig(
+                    system_instructions=self.SYSTEM_PROMPT,
+                    capabilities=AGYCapabilitiesConfig(
+                        sandbox_mode=sandbox_on,
+                        allowed_commands=allowed_cmds
+                    )
+                )
+                async with AGYAgent(config) as agent:
+                    resp = await agent.chat(prompt)
+                    full_text = ""
+                    async for token in resp:
+                        full_text += token
+                    return full_text
+            finally:
+                # Restore environment variable ke semula
+                if prev_model is not None:
+                    os.environ["ANTIGRAVITY_MODEL"] = prev_model
+                else:
+                    os.environ.pop("ANTIGRAVITY_MODEL", None)
 
         def _execute_async(coro):
             try:

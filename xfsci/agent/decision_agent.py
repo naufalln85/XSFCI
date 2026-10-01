@@ -262,9 +262,11 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
             agy_bin = shutil.which("agy")
             if not agy_bin:
                 candidates = [
+                    Path("/snap/bin/agy"),
                     Path(sys.prefix) / "bin" / "agy",
                     Path.home() / ".local" / "bin" / "agy",
                     Path("/usr/local/bin/agy"),
+                    Path("/usr/bin/agy"),
                 ]
                 for c in candidates:
                     if c.exists() and os.access(c, os.X_OK):
@@ -285,43 +287,37 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
 
             timeout_sec = self.antigravity_config.get("timeout_seconds", 60)
 
-            # Coba 1: agy dengan --model spesifik
-            try:
-                cmd = [agy_bin, "--model", model_name, "-p", full_prompt]
-                logger.info(f"🚀 Memanggil Antigravity CLI ({agy_bin} --model {model_name}) via Akun Pro...")
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_sec
-                )
-                if proc.returncode == 0 and proc.stdout.strip():
-                    return proc.stdout.strip()
-                elif proc.stderr:
-                    logger.debug(f"agy CLI stderr ({model_name}): {proc.stderr[:200]}")
-            except subprocess.TimeoutExpired:
-                logger.warning(f"agy CLI timed out after {timeout_sec}s untuk model {model_name}")
-            except Exception as e:
-                logger.debug(f"agy CLI call with --model failed: {e}")
+            # Antigravity CLI 1.2.11 membutuhkan parameter --effort (low/medium/high)
+            attempts = []
+            if model_name:
+                attempts.append([agy_bin, "--model", model_name, "--effort", "high", "-p", full_prompt])
+            # Fallback 1: Model default aktif di agy (Gemini 3.8 Flash High)
+            attempts.append([agy_bin, "--effort", "high", "-p", full_prompt])
+            # Fallback 2: Eksplisit gemini-3.8-flash dengan effort high
+            attempts.append([agy_bin, "--model", "gemini-3.8-flash", "--effort", "high", "-p", full_prompt])
 
-            # Coba 2: agy dengan model default aktif di CLI
-            try:
-                cmd_default = [agy_bin, "-p", full_prompt]
-                logger.info(f"🚀 Memanggil Antigravity CLI default model ({agy_bin}) via Akun Pro...")
-                proc = subprocess.run(
-                    cmd_default,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_sec
-                )
-                if proc.returncode == 0 and proc.stdout.strip():
-                    return proc.stdout.strip()
-            except Exception as e:
-                logger.debug(f"agy CLI default call failed: {e}")
+            for cmd in attempts:
+                try:
+                    model_desc = cmd[2] if "--model" in cmd else "default"
+                    logger.info(f"🚀 Memanggil Antigravity CLI ({agy_bin} model: {model_desc} --effort high) via Akun Pro...")
+                    proc = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_sec
+                    )
+                    if proc.returncode == 0 and proc.stdout.strip():
+                        return proc.stdout.strip()
+                    elif proc.stderr:
+                        logger.debug(f"agy CLI stderr ({model_desc}): {proc.stderr.strip()[:200]}")
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"agy CLI timed out after {timeout_sec}s")
+                except Exception as e:
+                    logger.debug(f"agy CLI execution error: {e}")
 
             return None
 
-        async def _call_model(model_name: str) -> str:
+        def _call_model(model_name: str) -> str:
             # 1. Jalur Utama: Antigravity CLI (Sesi Akun Pro dari 'agy auth login', tanpa API key)
             cli_res = _call_via_agy_cli(model_name)
             if cli_res:
@@ -329,50 +325,48 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
 
             # 2. Jalur Alternatif: Antigravity Python SDK (jika GEMINI_API_KEY tersedia)
             if ANTIGRAVITY_SDK_AVAILABLE and os.environ.get("GEMINI_API_KEY"):
-                prev_model = os.environ.get("ANTIGRAVITY_MODEL")
-                os.environ["ANTIGRAVITY_MODEL"] = model_name
+                async def _sdk_call():
+                    prev_model = os.environ.get("ANTIGRAVITY_MODEL")
+                    os.environ["ANTIGRAVITY_MODEL"] = model_name
+
+                    try:
+                        config = AGYLocalAgentConfig(
+                            system_instructions=self.SYSTEM_PROMPT,
+                            capabilities=AGYCapabilitiesConfig(
+                                sandbox_mode=sandbox_on,
+                                allowed_commands=allowed_cmds
+                            )
+                        )
+                        async with AGYAgent(config) as agent:
+                            resp = await agent.chat(prompt)
+                            full_text = ""
+                            async for token in resp:
+                                full_text += token
+                            return full_text
+                    finally:
+                        if prev_model is not None:
+                            os.environ["ANTIGRAVITY_MODEL"] = prev_model
+                        else:
+                            os.environ.pop("ANTIGRAVITY_MODEL", None)
 
                 try:
-                    config = AGYLocalAgentConfig(
-                        system_instructions=self.SYSTEM_PROMPT,
-                        capabilities=AGYCapabilitiesConfig(
-                            sandbox_mode=sandbox_on,
-                            allowed_commands=allowed_cmds
-                        )
-                    )
-                    async with AGYAgent(config) as agent:
-                        resp = await agent.chat(prompt)
-                        full_text = ""
-                        async for token in resp:
-                            full_text += token
-                        return full_text
-                finally:
-                    if prev_model is not None:
-                        os.environ["ANTIGRAVITY_MODEL"] = prev_model
-                    else:
-                        os.environ.pop("ANTIGRAVITY_MODEL", None)
+                    return asyncio.run(_sdk_call())
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        return loop.run_until_complete(_sdk_call())
+                    finally:
+                        loop.close()
 
             raise RuntimeError(f"Tidak dapat memanggil Antigravity Runtime untuk model {model_name} (CLI & SDK tidak tersedia/membutuhkan key)")
-
-        def _execute_async(coro):
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                    return loop.run_until_complete(coro)
-                else:
-                    return loop.run_until_complete(coro)
-            except RuntimeError:
-                return asyncio.run(coro)
 
         response_text = None
         model_used = primary_model
 
-        # 1. Coba Model Prioritas Pertama (Claude Opus)
+        # 1. Coba Model Prioritas Pertama
         try:
             logger.info(f"🚀 [Antigravity SRE] Memanggil Model Prioritas: {primary_model} (Sandbox: {sandbox_on})...")
-            response_text = _execute_async(_call_model(primary_model))
+            response_text = _call_model(primary_model)
             logger.success(f"✅ Berhasil mendapat respon dari model {primary_model}!")
         except Exception as e_opus:
             logger.warning(
@@ -380,9 +374,9 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
                 f"🔄 AUTO-SWITCHING ke Fallback Model: '{fallback_model}'..."
             )
             model_used = fallback_model
-            # 2. Auto-Switch ke Fallback Model (Gemini 3.8 Flash)
+            # 2. Auto-Switch ke Fallback Model
             try:
-                response_text = _execute_async(_call_model(fallback_model))
+                response_text = _call_model(fallback_model)
                 logger.success(f"✅ Berhasil mendapat respon dari Fallback Model: {fallback_model}!")
             except Exception as e_gemini:
                 logger.error(f"❌ Fallback Model '{fallback_model}' juga gagal: {e_gemini}")

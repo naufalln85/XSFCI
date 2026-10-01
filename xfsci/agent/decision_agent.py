@@ -249,33 +249,110 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
         primary_model = self.antigravity_config.get("model_priority", "claude-opus")
         fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.8-flash")
 
-        async def _call_model(model_name: str) -> str:
-            # Set model via environment variable — ini cara paling reliable
-            # untuk menginstruksikan Antigravity SDK menggunakan model tertentu.
-            # SDK membaca ANTIGRAVITY_MODEL saat spawn agent binary.
-            prev_model = os.environ.get("ANTIGRAVITY_MODEL")
-            os.environ["ANTIGRAVITY_MODEL"] = model_name
+        def _call_via_agy_cli(model_name: str) -> Optional[str]:
+            """
+            Panggil model menggunakan Antigravity CLI (`agy -p`)
+            yang telah terotentikasi dengan Akun Pro via `agy auth login`.
+            Menggunakan token sesi aktif tanpa membutuhkan GEMINI_API_KEY.
+            """
+            import shutil
+            import subprocess
 
+            # Cari path binary executable agy
+            agy_bin = shutil.which("agy")
+            if not agy_bin:
+                candidates = [
+                    Path(sys.prefix) / "bin" / "agy",
+                    Path.home() / ".local" / "bin" / "agy",
+                    Path("/usr/local/bin/agy"),
+                ]
+                for c in candidates:
+                    if c.exists() and os.access(c, os.X_OK):
+                        agy_bin = str(c)
+                        break
+
+            if not agy_bin:
+                logger.debug("Binary 'agy' tidak ditemukan, beralih ke SDK/fallback.")
+                return None
+
+            full_prompt = (
+                f"{self.SYSTEM_PROMPT}\n\n"
+                f"### LAPORAN SITUASI SRE (DATA AKTUAL):\n"
+                f"{prompt}\n\n"
+                f"TUGAS: Analisis data di atas dan tentukan tindakan perbaikan terbaik.\n"
+                f"WAJIB: Berikan HANYA respon dalam format JSON valid sesuai schema ActionDecision (tanpa teks pembuka/penutup)."
+            )
+
+            timeout_sec = self.antigravity_config.get("timeout_seconds", 60)
+
+            # Coba 1: agy dengan --model spesifik
             try:
-                config = AGYLocalAgentConfig(
-                    system_instructions=self.SYSTEM_PROMPT,
-                    capabilities=AGYCapabilitiesConfig(
-                        sandbox_mode=sandbox_on,
-                        allowed_commands=allowed_cmds
-                    )
+                cmd = [agy_bin, "--model", model_name, "-p", full_prompt]
+                logger.info(f"🚀 Memanggil Antigravity CLI ({agy_bin} --model {model_name}) via Akun Pro...")
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec
                 )
-                async with AGYAgent(config) as agent:
-                    resp = await agent.chat(prompt)
-                    full_text = ""
-                    async for token in resp:
-                        full_text += token
-                    return full_text
-            finally:
-                # Restore environment variable ke semula
-                if prev_model is not None:
-                    os.environ["ANTIGRAVITY_MODEL"] = prev_model
-                else:
-                    os.environ.pop("ANTIGRAVITY_MODEL", None)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.strip()
+                elif proc.stderr:
+                    logger.debug(f"agy CLI stderr ({model_name}): {proc.stderr[:200]}")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"agy CLI timed out after {timeout_sec}s untuk model {model_name}")
+            except Exception as e:
+                logger.debug(f"agy CLI call with --model failed: {e}")
+
+            # Coba 2: agy dengan model default aktif di CLI
+            try:
+                cmd_default = [agy_bin, "-p", full_prompt]
+                logger.info(f"🚀 Memanggil Antigravity CLI default model ({agy_bin}) via Akun Pro...")
+                proc = subprocess.run(
+                    cmd_default,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.strip()
+            except Exception as e:
+                logger.debug(f"agy CLI default call failed: {e}")
+
+            return None
+
+        async def _call_model(model_name: str) -> str:
+            # 1. Jalur Utama: Antigravity CLI (Sesi Akun Pro dari 'agy auth login', tanpa API key)
+            cli_res = _call_via_agy_cli(model_name)
+            if cli_res:
+                return cli_res
+
+            # 2. Jalur Alternatif: Antigravity Python SDK (jika GEMINI_API_KEY tersedia)
+            if ANTIGRAVITY_SDK_AVAILABLE and os.environ.get("GEMINI_API_KEY"):
+                prev_model = os.environ.get("ANTIGRAVITY_MODEL")
+                os.environ["ANTIGRAVITY_MODEL"] = model_name
+
+                try:
+                    config = AGYLocalAgentConfig(
+                        system_instructions=self.SYSTEM_PROMPT,
+                        capabilities=AGYCapabilitiesConfig(
+                            sandbox_mode=sandbox_on,
+                            allowed_commands=allowed_cmds
+                        )
+                    )
+                    async with AGYAgent(config) as agent:
+                        resp = await agent.chat(prompt)
+                        full_text = ""
+                        async for token in resp:
+                            full_text += token
+                        return full_text
+                finally:
+                    if prev_model is not None:
+                        os.environ["ANTIGRAVITY_MODEL"] = prev_model
+                    else:
+                        os.environ.pop("ANTIGRAVITY_MODEL", None)
+
+            raise RuntimeError(f"Tidak dapat memanggil Antigravity Runtime untuk model {model_name} (CLI & SDK tidak tersedia/membutuhkan key)")
 
         def _execute_async(coro):
             try:
@@ -315,13 +392,27 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
             return None
 
         try:
+            import re
             cleaned_text = response_text.strip()
+            # Bersihkan escape sequence / formatting ANSI jika ada
+            ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+            cleaned_text = ansi_escape.sub('', cleaned_text).strip()
+
             if "```json" in cleaned_text:
                 cleaned_text = cleaned_text.split("```json")[1].split("```")[0].strip()
             elif "```" in cleaned_text:
                 cleaned_text = cleaned_text.split("```")[1].split("```")[0].strip()
 
-            response_data = json.loads(cleaned_text)
+            try:
+                response_data = json.loads(cleaned_text)
+            except json.JSONDecodeError:
+                if "{" in cleaned_text and "}" in cleaned_text:
+                    first_brace = cleaned_text.find("{")
+                    last_brace = cleaned_text.rfind("}")
+                    response_data = json.loads(cleaned_text[first_brace:last_brace + 1])
+                else:
+                    raise
+
             primary_target = getattr(situation.ml_prediction, "root_cause_service", None) or situation.pandas_metrics.target_pod
 
             decision = ActionDecision(

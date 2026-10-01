@@ -15,6 +15,9 @@
 # 3. Output: PandasMetrics (Pydantic schema) → dikirim ke AI Agent
 # ============================================================
 
+import os
+import shutil
+import subprocess
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -51,10 +54,100 @@ class PandasMetricProcessor:
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
         
-        self.prometheus_url = self.config["monitoring"]["prometheus"]["url"]
-        self.target_namespace = self.config["data"]["target_namespace"]
+        # Ambil URL Prometheus: Prioritas Environment Variable -> Config YAML
+        self.prometheus_url = os.environ.get(
+            "PROMETHEUS_URL",
+            self.config.get("monitoring", {}).get("prometheus", {}).get("url", "http://172.20.0.104:30090")
+        )
+        self.target_namespace = self.config.get("data", {}).get("target_namespace", "demo")
+        self._last_warn_time = 0.0
+        
+        # Verifikasi & Auto-healing koneksi Prometheus
+        self._setup_connection()
         
         logger.info(f"PandasMetricProcessor initialized | Prometheus: {self.prometheus_url}")
+
+    def _test_url(self, url: str, timeout: float = 2.0) -> bool:
+        """Cek apakah URL Prometheus aktif dan merespon."""
+        try:
+            res = requests.get(f"{url}/-/healthy", timeout=timeout)
+            if res.status_code == 200:
+                return True
+        except Exception:
+            pass
+        try:
+            res = requests.get(f"{url}/api/v1/query", params={"query": "1"}, timeout=timeout)
+            return res.status_code == 200
+        except Exception:
+            return False
+
+    def _setup_connection(self):
+        """
+        Deteksi dan hubungkan ke Prometheus.
+        Jika URL utama (NodePort 30090) connection refused:
+        1. Coba localhost:9090 / 127.0.0.1:9090
+        2. Jika ada kubectl, buat auto port-forward dari cluster K8s
+        """
+        if self._test_url(self.prometheus_url):
+            logger.info(f"✅ Koneksi Prometheus aktif di {self.prometheus_url}")
+            return
+
+        # Cek kandidat endpoint lokal
+        candidates = [
+            "http://127.0.0.1:9090",
+            "http://localhost:9090",
+            "http://127.0.0.1:30090",
+            "http://localhost:30090"
+        ]
+        for cand in candidates:
+            if cand != self.prometheus_url and self._test_url(cand):
+                logger.success(f"🔄 Terhubung ke Prometheus lokal di {cand}")
+                self.prometheus_url = cand
+                return
+
+        # Coba auto-tunnel via kubectl port-forward
+        self._try_auto_port_forward()
+
+    def _try_auto_port_forward(self):
+        """Membuka port-forward otomatis ke service Prometheus di namespace monitoring."""
+        if not shutil.which("kubectl"):
+            return
+
+        try:
+            cmd = ["kubectl", "get", "svc", "-n", "monitoring", "-o", "jsonpath={.items[*].metadata.name}"]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                svcs = res.stdout.strip().split()
+                prom_svc = None
+                for s in svcs:
+                    if "prometheus-operated" in s:
+                        prom_svc = s
+                        break
+                    elif "prometheus" in s and not any(x in s for x in ["grafana", "alertmanager", "node-exporter", "kube-state"]):
+                        prom_svc = s
+                
+                if not prom_svc and svcs:
+                    prom_svc = "prometheus-k8s"
+
+                if prom_svc:
+                    logger.info(f"🔌 Membuka terowongan otomatis via kubectl port-forward ke svc/{prom_svc} (port 9090)...")
+                    subprocess.Popen(
+                        ["kubectl", "port-forward", "-n", "monitoring", f"svc/{prom_svc}", "9090:9090", "--address", "127.0.0.1"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    time.sleep(2)
+                    if self._test_url("http://127.0.0.1:9090"):
+                        self.prometheus_url = "http://127.0.0.1:9090"
+                        logger.success(f"✅ Auto port-forward berhasil! Prometheus aktif di {self.prometheus_url}")
+                        return
+        except Exception as e:
+            logger.debug(f"Auto port-forward error: {e}")
+
+        logger.warning(
+            f"⚠️ Prometheus di {self.prometheus_url} tidak dapat dijangkau. "
+            f"Jika NodePort terblokir firewall, Anda dapat menjalankan: 'kubectl port-forward -n monitoring svc/prometheus-k8s 9090:9090 &' di VM5."
+        )
     
     def _query_prometheus(self, query: str) -> Optional[pd.DataFrame]:
         """
@@ -88,7 +181,10 @@ class PandasMetricProcessor:
             return pd.DataFrame(rows)
         
         except Exception as e:
-            logger.warning(f"Prometheus query failed: {e}")
+            now = time.time()
+            if now - self._last_warn_time > 30:
+                logger.warning(f"Prometheus query failed ({self.prometheus_url}): {e}")
+                self._last_warn_time = now
             return None
     
     def _query_prometheus_range(self, query: str, duration_minutes: int = 15,
@@ -138,7 +234,10 @@ class PandasMetricProcessor:
             return df
         
         except Exception as e:
-            logger.warning(f"Prometheus range query failed: {e}")
+            now = time.time()
+            if now - self._last_warn_time > 30:
+                logger.warning(f"Prometheus range query failed ({self.prometheus_url}): {e}")
+                self._last_warn_time = now
             return None
     
     def get_cpu_metrics(self, pod_name: str) -> dict:

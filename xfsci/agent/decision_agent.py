@@ -280,17 +280,27 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
                 f"{prompt}\n\n"
                 f"TUGAS: Analisis data di atas dan tentukan tindakan perbaikan terbaik.\n"
                 f"WAJIB: Berikan HANYA respon dalam format JSON valid sesuai schema ActionDecision "
-                f"(tanpa teks pembuka/penutup)."
+                f"(tanpa teks pembuka/penutup, dan JANGAN mengeksekusi tool sistem eksternal)."
             )
 
             # Slug sudah lengkap dari `agy models`, langsung pakai di --model
+            # Gunakan --dangerously-skip-permissions untuk mode headless (non-interaktif)
             try:
-                cmd = [agy_bin, "--model", model_name, "-p", full_prompt]
+                cmd = [agy_bin, "--model", model_name, "--dangerously-skip-permissions", "-p", full_prompt]
                 logger.info(f"🚀 Memanggil agy CLI --model {model_name}...")
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
                 if proc.returncode == 0 and proc.stdout.strip():
                     logger.success(f"✅ agy CLI ({model_name}) berhasil merespon!")
                     return proc.stdout.strip()
+                
+                # Fallback jika CLI tidak mengenali flag tersebut (versi lain)
+                if proc.returncode != 0 and "dangerously-skip-permissions" in (proc.stderr or ""):
+                    cmd_alt = [agy_bin, "--model", model_name, "-p", full_prompt]
+                    proc = subprocess.run(cmd_alt, capture_output=True, text=True, timeout=timeout_sec)
+                    if proc.returncode == 0 and proc.stdout.strip():
+                        logger.success(f"✅ agy CLI ({model_name}) berhasil merespon!")
+                        return proc.stdout.strip()
+
                 if proc.stderr:
                     logger.debug(f"agy stderr ({model_name}): {proc.stderr[:300]}")
             except subprocess.TimeoutExpired:

@@ -116,9 +116,13 @@ PRIORITAS KEAMANAN:
 
         if ANTIGRAVITY_SDK_AVAILABLE:
             self.antigravity_available = True
+            pri = self.antigravity_config.get('model_priority', 'gemini-3.8-flash')
+            pri_e = self.antigravity_config.get('effort_priority', 'high')
+            fb = self.antigravity_config.get('fallback_model', 'gemini-3.7-flash')
+            fb_e = self.antigravity_config.get('effort_fallback', 'high')
             logger.success(
-                f"Antigravity Agentic SDK ready | Priority: {self.antigravity_config.get('model_priority', 'claude-opus')} "
-                f"| Fallback: {self.antigravity_config.get('fallback_model', 'gemini-3.8-flash')} | Sandbox: ON"
+                f"Antigravity Agentic SDK ready | Priority: {pri} (effort={pri_e}) "
+                f"| Fallback: {fb} (effort={fb_e}) | Sandbox: ON"
             )
         else:
             logger.info("google-antigravity SDK not present in local environment — standby mode (will use Rule-based Safety Net)")
@@ -244,8 +248,10 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
         prompt = self._build_prompt(situation, action_priorities)
         allowed_cmds = self.antigravity_config.get("allowed_commands", ["kubectl", "curl", "grep", "cat", "sh"])
         sandbox_on = self.antigravity_config.get("sandbox_mode", True)
-        primary_model = self.antigravity_config.get("model_priority", "claude-opus-4-6-thinking")
-        fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.8-flash-high")
+        primary_model = self.antigravity_config.get("model_priority", "gemini-3.8-flash")
+        primary_effort = self.antigravity_config.get("effort_priority", "high")
+        fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.7-flash")
+        fallback_effort = self.antigravity_config.get("effort_fallback", "high")
         timeout_sec = self.antigravity_config.get("timeout_seconds", 60)
 
         # ──────────────────────────────────────────────────────
@@ -253,7 +259,7 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
         #   Menggunakan sesi Akun Pro dari `agy auth login`.
         #   TIDAK membutuhkan GEMINI_API_KEY.
         # ──────────────────────────────────────────────────────
-        def _call_via_cli(model_name: str) -> Optional[str]:
+        def _call_via_cli(model_name: str, effort: str = "high") -> Optional[str]:
             import shutil
             import subprocess
 
@@ -280,13 +286,13 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
                 f"(tanpa teks pembuka/penutup)."
             )
 
-            # Panggil agy dengan --model slug yang tepat
+            # agy CLI membutuhkan --model dan --effort sebagai flag terpisah
             try:
-                cmd = [agy_bin, "--model", model_name, "-p", full_prompt]
-                logger.info(f"🚀 Memanggil agy CLI --model {model_name}...")
+                cmd = [agy_bin, "--model", model_name, "--effort", effort, "-p", full_prompt]
+                logger.info(f"🚀 Memanggil agy CLI --model {model_name} --effort {effort}...")
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
                 if proc.returncode == 0 and proc.stdout.strip():
-                    logger.success(f"✅ agy CLI ({model_name}) berhasil merespon!")
+                    logger.success(f"✅ agy CLI ({model_name}, effort={effort}) berhasil merespon!")
                     return proc.stdout.strip()
                 if proc.stderr:
                     logger.debug(f"agy stderr ({model_name}): {proc.stderr[:300]}")
@@ -349,25 +355,25 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
         # Strategi Eksekusi: CLI → SDK → Fallback Model → None
         # ──────────────────────────────────────────────────────
         response_text = None
-        model_used = primary_model
+        model_used = f"{primary_model} (effort={primary_effort})"
 
-        # 1️⃣ Model Prioritas (Claude Opus 4.6 Thinking)
-        logger.info(f"🚀 [Antigravity SRE] Model Prioritas: {primary_model} (Sandbox: {sandbox_on})")
-        response_text = _call_via_cli(primary_model)
+        # 1️⃣ Model Prioritas (Gemini 3.8 Flash High)
+        logger.info(f"🚀 [Antigravity SRE] Model Prioritas: {primary_model} --effort {primary_effort} (Sandbox: {sandbox_on})")
+        response_text = _call_via_cli(primary_model, primary_effort)
 
         if not response_text:
             logger.debug(f"CLI gagal untuk {primary_model}, mencoba SDK...")
             response_text = _call_via_sdk(primary_model)
 
-        # 2️⃣ Auto-Switch ke Fallback (Gemini 3.8 Flash High) jika prioritas gagal
+        # 2️⃣ Auto-Switch ke Fallback (Gemini 3.7 Flash High) jika prioritas gagal
         if not response_text:
             logger.warning(
                 f"⚠️ Model prioritas '{primary_model}' tidak tersedia. "
-                f"🔄 AUTO-SWITCHING ke Fallback: '{fallback_model}'..."
+                f"🔄 AUTO-SWITCHING ke Fallback: '{fallback_model}' --effort {fallback_effort}..."
             )
-            model_used = fallback_model
+            model_used = f"{fallback_model} (effort={fallback_effort})"
 
-            response_text = _call_via_cli(fallback_model)
+            response_text = _call_via_cli(fallback_model, fallback_effort)
             if not response_text:
                 response_text = _call_via_sdk(fallback_model)
 

@@ -164,8 +164,8 @@ ai_agent:
   # Menggunakan model Claude Opus / Gemini 3.8 Flash dari langganan Pro Anda
   antigravity:
     enabled: true
-    model_priority: "gemini-3.8-flash"   # Model aktif Akun Pro di Antigravity CLI
-    fallback_model: "gemini-3.8-flash"   # Fallback model
+    model_priority: "claude-opus-4-6-thinking"  # Prioritas: Claude Opus 4.6 (Thinking) deep reasoning
+    fallback_model: "gemini-3.8-flash-high"     # Fallback: Gemini 3.8 Flash (High) saat Opus cooldown
     sandbox_mode: true                   # Enforce execution inside protected sandbox
     allowed_commands:
       - "kubectl"

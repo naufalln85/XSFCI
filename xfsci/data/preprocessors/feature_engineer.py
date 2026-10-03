@@ -7,11 +7,11 @@ dataset yang sudah di-augmentasi untuk meningkatkan
 kemampuan model LSTM dan GNN dalam mendeteksi pola anomali.
 
 Peningkatan V2 (SOTA Edition):
-  - Per-pod Z-score normalisasi (bukan global min-max)
+  - Per-pod Z-score kausal berbasis 15 menit sebelumnya (tanpa data masa depan)
   - Memory Slope (rolling regression 12 step = 60 detik)
   - Network Asymmetry (|RX-TX| / total)
   - CPU Z-Score per Pod (deviasi dari baseline tiap pod)
-  - Anomaly Score berbasis z-score (bukan global norm)
+  - Anomaly Score berbatas tetap agar training/live memakai rumus yang sama
 
 Fitur Turunan yang Dihasilkan:
    1. cpu_delta           : Delta cpu_usage antara step (rate of change)
@@ -47,28 +47,26 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-BASE_DIR = Path(__file__).parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models.gnn.feature_contract import (
+    BASE_METRIC_COLS,
+    DERIVED_FEATURE_COLS,
+    FEATURE_PIPELINE_VERSION,
+    MODEL_FEATURE_COLS,
+)
+
+BASE_DIR = PROJECT_ROOT
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 # Kolom numerik dasar (dari metrics_scraper.py)
-BASE_NUMERIC_COLS = [
-    "cpu_usage", "memory_usage", "memory_usage_percent",
-    "pod_restarts", "net_rx_bytes", "net_tx_bytes",
-    "request_rate", "error_rate",
-]
+BASE_NUMERIC_COLS = BASE_METRIC_COLS
 
 # Kolom fitur turunan yang akan ditambahkan
-DERIVED_COLS = [
-    "cpu_delta", "memory_delta", "memory_growth_rate",
-    "cpu_rolling_mean_5", "cpu_rolling_std_5", "mem_rolling_mean_5",
-    "restart_delta", "net_total_bytes", "net_rx_tx_ratio",
-    "anomaly_score_raw",
-    # V2 SOTA: fitur diskriminatif baru
-    "memory_slope_12",     # Rolling OLS slope memory (12 step = 60 detik)
-    "cpu_zscore_pod",      # Z-score CPU per-pod (deviasi dari baseline sendiri)
-    "net_asymmetry",       # |RX - TX| / (RX + TX + eps) untuk deteksi traffic anomali
-]
+DERIVED_COLS = DERIVED_FEATURE_COLS
 
 # Kolom final untuk model (input features)
 MODEL_FEATURE_COLS = BASE_NUMERIC_COLS + DERIVED_COLS
@@ -93,6 +91,16 @@ class FeatureEngineer:
         logger.info(f"Loading: {csv_path.name}")
         df = pd.read_csv(csv_path)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
+        if "error_rate" in df.columns:
+            # Compatibilitas per baris dengan CSV lama (persen) yang mungkin
+            # sudah digabung dengan data sintetis baru (fraksi 0-1).
+            error_rate = pd.to_numeric(df["error_rate"], errors="coerce")
+            legacy_percent_rows = error_rate > 1.0
+            if legacy_percent_rows.any():
+                df.loc[legacy_percent_rows, "error_rate"] = error_rate.loc[legacy_percent_rows] / 100.0
+                logger.warning(
+                    f"Converted {int(legacy_percent_rows.sum())} legacy error_rate rows from percent to fraction."
+                )
         logger.info(f"  Rows: {len(df):,} | Pods: {df['pod_name'].nunique()}")
         return df
 
@@ -245,19 +253,16 @@ class FeatureEngineer:
         """
         df = df.sort_values(["pod_name", "timestamp"]).copy()
 
-        # Hitung z-score CPU per pod
-        def pod_zscore(series):
-            mean = series.mean()
-            std = series.std()
-            if std == 0 or np.isnan(std):
-                return pd.Series(np.zeros(len(series)), index=series.index)
-            return ((series - mean) / std).clip(-5, 5)  # Clip ke [-5, 5] untuk stabilitas
+        # Baseline kausal: gunakan hanya 180 sampel sebelumnya (15 menit),
+        # supaya rumus training dapat diulang saat inferensi live tanpa melihat masa depan.
+        def causal_zscore(series):
+            history = series.shift(1)
+            rolling = history.rolling(window=180, min_periods=2)
+            mean = rolling.mean()
+            std = rolling.std().replace(0, np.nan)
+            return ((series - mean) / std).replace([np.inf, -np.inf], np.nan).fillna(0).clip(-5, 5)
 
-        df["cpu_zscore_pod"] = (
-            df.groupby("pod_name")["cpu_usage"]
-              .transform(pod_zscore)
-              .round(4)
-        )
+        df["cpu_zscore_pod"] = df.groupby("pod_name")["cpu_usage"].transform(causal_zscore).round(4)
 
         logger.info("  CPU z-score per pod added: cpu_zscore_pod")
         return df
@@ -274,23 +279,18 @@ class FeatureEngineer:
           - net_asymmetry: traffic yang tidak simetris
           - error_rate: tingkat error HTTP/gRPC
         """
-        def norm(series):
-            mn, mx = series.min(), series.max()
-            if mx - mn == 0:
-                return pd.Series(np.zeros(len(series)), index=series.index)
-            return (series - mn) / (mx - mn)
-
-        # V2: Scoring berbasis fitur yang lebih diskriminatif
+        # Rumus berbatas tetap agar hasilnya identik di data training dan live.
+        # Normalisasi min-max final tetap memakai scaler yang disimpan.
         score = (
-            0.25 * norm(df["cpu_zscore_pod"].abs().clip(0, 5)) +         # Deviasi CPU dari baseline pod
-            0.20 * norm(df["memory_slope_12"].clip(0, 100)) +            # Trend memory naik (leak indicator)
-            0.20 * norm(df["restart_delta"].clip(0, 5)) +                # Restart baru terjadi
-            0.15 * norm(df["net_asymmetry"].clip(0, 1)) +                # Traffic asymmetry
-            0.10 * norm(df["error_rate"].clip(0, 1)) +                   # Error rate
-            0.10 * norm(df["memory_growth_rate"].clip(0, 100))            # Growth rate memory
+            0.25 * (df["cpu_zscore_pod"].abs().clip(0, 5) / 5) +
+            0.20 * (df["memory_slope_12"].clip(0, 100) / 100) +
+            0.20 * (df["restart_delta"].clip(0, 5) / 5) +
+            0.15 * df["net_asymmetry"].clip(0, 1) +
+            0.10 * df["error_rate"].clip(0, 1) +
+            0.10 * (df["memory_growth_rate"].clip(0, 100) / 100)
         )
 
-        df["anomaly_score_raw"] = score.round(4)
+        df["anomaly_score_raw"] = score.clip(0, 1).round(4)
         logger.info("  Anomaly score V2 added: anomaly_score_raw (0-1, z-score based)")
         return df
 
@@ -373,6 +373,17 @@ class FeatureEngineer:
         scaler_path = PROCESSED_DIR / "scaler_params.json"
         scaler_path.write_text(json.dumps(self.scaler_params, indent=2))
         logger.success(f"Scaler params saved: scaler_params.json")
+
+        contract_path = PROCESSED_DIR / "feature_contract.json"
+        contract_path.write_text(json.dumps({
+            "version": FEATURE_PIPELINE_VERSION,
+            "features": MODEL_FEATURE_COLS,
+            "normalization": "minmax_clip_0_1",
+            "error_rate_unit": "fraction_0_1",
+            "cpu_usage_unit": "cores",
+            "memory_usage_unit": "bytes",
+        }, indent=2))
+        logger.success("Feature contract saved: feature_contract.json")
 
         # Simpan label map
         label_map_path = PROCESSED_DIR / "label_map.json"

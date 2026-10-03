@@ -84,6 +84,15 @@ class DeterministicScoringEngine:
         conf_component = ml_prediction.confidence * conf_weight
         score += conf_component
         breakdown["ml_confidence"] = round(conf_component, 2)
+
+        # --- Komponen CPU: beban tinggi yang terukur ---
+        cpu_threshold = self.urgency_config.get("cpu_overload_threshold_pct", 80)
+        cpu_score = self.urgency_config.get("cpu_overload_score", 15)
+        if pandas_metrics.cpu_usage_avg_5m >= cpu_threshold:
+            score += cpu_score
+            breakdown["cpu_overload"] = cpu_score
+        else:
+            breakdown["cpu_overload"] = 0
         
         # --- Komponen 3: Memory Leak Detection (max 15 poin) ---
         mem_threshold = self.urgency_config.get("memory_leak_threshold_mb_min", 5)
@@ -182,7 +191,7 @@ class DeterministicScoringEngine:
             })
         
         # CPU Overload → Scale Out atau Rate Limit
-        if pandas_metrics.cpu_usage_avg_5m > 80:
+        if pandas_metrics.cpu_usage_avg_5m > 80 and pandas_metrics.request_rate_rps > 0:
             priorities.append({
                 "action": ActionType.SCALE_OUT,
                 "priority": 85,
@@ -195,17 +204,12 @@ class DeterministicScoringEngine:
                     "reason": f"High RPS ({pandas_metrics.request_rate_rps:.0f}) causing CPU pressure"
                 })
         
-        # Crash Loop → Scale Out (jaga availability)
+        # Crash Loop → investigasi; restart count alone does not prove overload.
         if pandas_metrics.pod_restarts_1h >= 3:
             priorities.append({
-                "action": ActionType.SCALE_OUT,
-                "priority": 88,
-                "reason": f"Pod restart {pandas_metrics.pod_restarts_1h}x (crash loop)"
-            })
-            priorities.append({
                 "action": ActionType.ESCALATE,
-                "priority": 70,
-                "reason": "Crash loop mungkin butuh investigasi kode"
+                "priority": 82,
+                "reason": f"Pod restart {pandas_metrics.pod_restarts_1h}x; periksa log/event sebelum memilih remediasi"
             })
         
         # Latency tinggi → Rate Limit atau Migrate

@@ -2,7 +2,7 @@
 # XFSCI Pandas Metric Processor
 # ============================================================
 # Modul ini mengolah data mentah dari Prometheus/Loki menjadi
-# metrik terstruktur yang 100% akurat (matematika Python murni).
+# metrik terstruktur dengan perhitungan deterministik; kualitas bergantung pada sumber telemetry.
 #
 # MENGAPA PAKAI PANDAS, BUKAN LLM?
 # - Pandas menghitung angka secara EKSAK (tidak bisa halusinasi)
@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -35,7 +36,7 @@ from agent.action_schema import PandasMetrics, AnomalyType
 class PandasMetricProcessor:
     """
     Mengolah data metrik dari Prometheus menjadi laporan numerik
-    yang 100% akurat dan deterministik.
+    yang dihitung secara deterministik dari sumber telemetry.
     
     Semua output adalah angka hasil perhitungan Python/Pandas —
     TIDAK ADA satu pun output yang dihasilkan oleh LLM/AI.
@@ -61,6 +62,8 @@ class PandasMetricProcessor:
         )
         self.target_namespace = self.config.get("data", {}).get("target_namespace", "demo")
         self._last_warn_time = 0.0
+        self._gnn_scaler_params = None
+        self.last_gnn_snapshot_status = {"available": False, "reason": "not_collected"}
         
         # Verifikasi & Auto-healing koneksi Prometheus
         self._setup_connection()
@@ -239,13 +242,204 @@ class PandasMetricProcessor:
                 logger.warning(f"Prometheus range query failed ({self.prometheus_url}): {e}")
                 self._last_warn_time = now
             return None
+
+    def _load_gnn_scaler_params(self) -> dict:
+        """Load the exact min-max parameters produced with the current feature pipeline."""
+        if self._gnn_scaler_params is not None:
+            return self._gnn_scaler_params
+        scaler_path = Path(__file__).resolve().parent.parent / "data" / "processed" / "scaler_params.json"
+        if not scaler_path.exists():
+            raise RuntimeError(f"GNN scaler is missing: {scaler_path}")
+        import json
+        with open(scaler_path, "r", encoding="utf-8") as scaler_file:
+            self._gnn_scaler_params = json.load(scaler_file)
+        return self._gnn_scaler_params
+
+    def get_gnn_feature_snapshot(self, lookback_minutes: int = 15) -> tuple[dict, dict]:
+        """Build a complete live {service: 21 raw features} snapshot for GNN inference.
+
+        Telemetry is queried by pod from Prometheus, transformed with the same
+        FeatureEngineer functions used for training, then replicas are averaged
+        into the canonical service nodes. Missing required telemetry fails closed.
+        """
+        from data.preprocessors.feature_engineer import FeatureEngineer
+        from models.gnn.feature_contract import BASE_METRIC_COLS, FEATURE_PIPELINE_VERSION, MODEL_FEATURE_COLS
+        from models.gnn.graph_dataset import SERVICE_NAMES, extract_service_name
+
+        status = {
+            "available": False,
+            "feature_count": 0,
+            "service_count": 0,
+            "lookback_minutes": lookback_minutes,
+            "degraded_features": [],
+            "reason": "collecting",
+        }
+        try:
+            scaler = self._load_gnn_scaler_params()
+            contract_path = Path(__file__).resolve().parent.parent / "data" / "processed" / "feature_contract.json"
+            if not contract_path.exists():
+                raise RuntimeError("feature_contract.json is missing; rerun feature_engineer.py")
+            import json
+            with open(contract_path, "r", encoding="utf-8") as contract_file:
+                contract = json.load(contract_file)
+            if contract.get("version") != FEATURE_PIPELINE_VERSION:
+                raise RuntimeError(
+                    f"feature contract version mismatch: {contract.get('version')!r}; "
+                    f"expected {FEATURE_PIPELINE_VERSION!r}; rerun feature_engineer.py and retrain GNN"
+                )
+            missing_scaler = sorted(set(MODEL_FEATURE_COLS) - set(scaler))
+            if missing_scaler:
+                raise RuntimeError(f"scaler schema incomplete: {missing_scaler}")
+
+            ns = self.target_namespace
+            queries = {
+                "cpu_usage": f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns}",container!="",container!="POD"}}[1m])) by (pod)',
+                "memory_usage": f'sum(container_memory_working_set_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod)',
+                "memory_usage_percent": (
+                    f'sum(container_memory_working_set_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod) / '
+                    f'sum(container_spec_memory_limit_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod) * 100'
+                ),
+                "pod_restarts": f'sum(kube_pod_container_status_restarts_total{{namespace="{ns}"}}) by (pod)',
+                "net_rx_bytes": f'sum(rate(container_network_receive_bytes_total{{namespace="{ns}"}}[1m])) by (pod)',
+                "net_tx_bytes": f'sum(rate(container_network_transmit_bytes_total{{namespace="{ns}"}}[1m])) by (pod)',
+                "request_rate": f'sum(rate(http_server_requests_seconds_count{{namespace="{ns}"}}[1m])) by (pod)',
+                "error_rate": (
+                    f'sum(rate(http_server_requests_seconds_count{{namespace="{ns}",status=~"4..|5.."}}[1m])) by (pod) / '
+                    f'sum(rate(http_server_requests_seconds_count{{namespace="{ns}"}}[1m])) by (pod)'
+                ),
+            }
+
+            def constant_zero(metric_name: str) -> bool:
+                params = scaler.get(metric_name, {})
+                return float(params.get("min", 0.0)) == 0.0 and float(params.get("max", 0.0)) == 0.0
+
+            # A source may be absent only if its training column was constant
+            # zero. Preserve that training value but expose the missing source.
+            optional_zero_metrics = {name for name in BASE_METRIC_COLS if constant_zero(name)}
+            app_metric_names = {"request_rate", "error_rate"}
+            with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+                futures = {
+                    name: pool.submit(self._query_prometheus_range, query, lookback_minutes, "5s")
+                    for name, query in queries.items()
+                }
+                results = {name: future.result() for name, future in futures.items()}
+
+            frames = []
+            for metric_name in BASE_METRIC_COLS:
+                result = results.get(metric_name)
+                if result is None or result.empty:
+                    if metric_name in optional_zero_metrics:
+                        status["degraded_features"].append(metric_name)
+                        continue
+                    raise RuntimeError(f"required Prometheus series unavailable: {metric_name}")
+                pod_key = "pod" if "pod" in result.columns else "pod_name" if "pod_name" in result.columns else None
+                if pod_key is None:
+                    raise RuntimeError(f"Prometheus result for {metric_name} has no pod label")
+                metric_frame = result[[pod_key, "timestamp", "value"]].copy()
+                metric_frame.rename(columns={pod_key: "pod_name", "value": metric_name}, inplace=True)
+                metric_frame["pod_name"] = metric_frame["pod_name"].astype(str)
+                metric_frame[metric_name] = pd.to_numeric(metric_frame[metric_name], errors="coerce")
+                metric_frame = metric_frame.groupby(["pod_name", "timestamp"], as_index=False)[metric_name].mean()
+                frames.append(metric_frame)
+
+            if not frames:
+                raise RuntimeError("Prometheus returned no pod metric series")
+            raw = frames[0]
+            for metric_frame in frames[1:]:
+                raw = raw.merge(metric_frame, on=["pod_name", "timestamp"], how="outer")
+
+            for metric_name in optional_zero_metrics:
+                if metric_name not in raw.columns:
+                    raw[metric_name] = 0.0
+                if raw[metric_name].isna().any():
+                    status["degraded_features"].append(metric_name)
+                raw[metric_name] = raw[metric_name].fillna(0.0)
+
+            for metric_name in app_metric_names.intersection(raw.columns):
+                if raw[metric_name].isna().any():
+                    status["degraded_features"].append(metric_name)
+                    # Consistent with metrics_scraper: NaN error ratio at zero
+                    # request volume is represented as a measured zero.
+                    raw[metric_name] = raw[metric_name].fillna(0.0)
+
+            raw.sort_values(["pod_name", "timestamp"], inplace=True)
+            for metric_name in BASE_METRIC_COLS:
+                if metric_name in optional_zero_metrics:
+                    continue
+                raw[metric_name] = raw.groupby("pod_name", sort=False)[metric_name].ffill(limit=1)
+
+            valid_service = raw["pod_name"].map(extract_service_name).isin(SERVICE_NAMES)
+            raw = raw.loc[valid_service].copy()
+            if raw.empty:
+                raise RuntimeError("no Prometheus pods map to the configured 11 services")
+
+            # Discard incomplete samples. Keep each pod's last contiguous segment
+            # so rolling and delta calculations never bridge a telemetry gap.
+            raw = raw[np.isfinite(raw[BASE_METRIC_COLS].to_numpy(dtype=float)).all(axis=1)].copy()
+            contiguous = []
+            for _, pod_rows in raw.groupby("pod_name", sort=False):
+                pod_rows = pod_rows.sort_values("timestamp").copy()
+                gaps = pod_rows["timestamp"].diff() > pd.Timedelta(seconds=7.5)
+                if gaps.any():
+                    pod_rows = pod_rows.loc[gaps[gaps].index[-1]:]
+                contiguous.append(pod_rows)
+            if not contiguous:
+                raise RuntimeError("no complete pod samples remain after telemetry alignment")
+            raw = pd.concat(contiguous, ignore_index=True)
+            raw["service_name"] = raw["pod_name"].map(extract_service_name)
+            raw["pod_restarts"] = raw["pod_restarts"].clip(lower=0)
+
+            engineer = FeatureEngineer()
+            featured = engineer.add_delta_features(raw)
+            featured = engineer.add_rolling_features(featured, window=5)
+            featured = engineer.add_network_features(featured)
+            featured = engineer.add_memory_slope(featured, window=12)
+            featured = engineer.add_cpu_zscore_per_pod(featured)
+            featured = engineer.add_anomaly_score(featured)
+
+            now = pd.Timestamp(datetime.utcnow())
+            latest_by_pod = featured.sort_values("timestamp").groupby("pod_name", sort=False).tail(1)
+            latest_by_pod = latest_by_pod.loc[(now - latest_by_pod["timestamp"]) <= pd.Timedelta(seconds=20)]
+            if (
+                not latest_by_pod.empty
+                and latest_by_pod["timestamp"].max() - latest_by_pod["timestamp"].min() > pd.Timedelta(seconds=7.5)
+            ):
+                raise RuntimeError("latest pod metrics are not from a coherent 5-second snapshot")
+            latest_by_pod["service_name"] = latest_by_pod["pod_name"].map(extract_service_name)
+            present_services = set(latest_by_pod["service_name"])
+            missing_services = sorted(set(SERVICE_NAMES) - present_services)
+            if missing_services:
+                raise RuntimeError(f"live service coverage incomplete: {missing_services}")
+
+            service_snapshot = latest_by_pod.groupby("service_name")[MODEL_FEATURE_COLS].mean()
+            snapshot = {
+                service: {feature: float(service_snapshot.loc[service, feature]) for feature in MODEL_FEATURE_COLS}
+                for service in SERVICE_NAMES
+            }
+            if any(not np.isfinite(value) for metrics in snapshot.values() for value in metrics.values()):
+                raise RuntimeError("derived feature snapshot contains NaN or infinite values")
+
+            status.update({
+                "available": True,
+                "feature_count": len(MODEL_FEATURE_COLS),
+                "service_count": len(snapshot),
+                "reason": "ok" if not status["degraded_features"] else "constant_zero_telemetry_unavailable",
+                "snapshot_timestamp": latest_by_pod["timestamp"].max().isoformat(),
+            })
+            self.last_gnn_snapshot_status = status
+            return snapshot, status
+        except Exception as exc:
+            status["reason"] = str(exc)
+            self.last_gnn_snapshot_status = status
+            logger.warning(f"GNN live feature snapshot unavailable: {exc}")
+            raise
     
     def get_cpu_metrics(self, pod_name: str) -> dict:
         """
         Hitung rata-rata CPU usage 5m dan 15m untuk pod tertentu.
         
         Rumus: rate(container_cpu_usage_seconds_total[5m]) * 100
-        Ini adalah perhitungan rate murni — 0% halusinasi.
+        Ini adalah perhitungan rate deterministik; bukan jaminan kelengkapan/akurasi sumber.
         """
         # CPU rata-rata 5 menit
         query_5m = (
@@ -467,7 +661,7 @@ class PandasMetricProcessor:
             node_name: Nama node tempat pod berjalan
         
         Returns:
-            PandasMetrics — Laporan numerik 100% akurat
+            PandasMetrics — laporan numerik terhitung dari telemetry
         """
         if pod_name is None:
             pod_name = deployment_name  # Akan di-regex match

@@ -53,6 +53,7 @@ from models.gnn.graph_dataset import (
     IDX_TO_LABEL,
     NUM_SERVICES,
     NORMALIZED_FEATURE_COLS,
+    FEATURE_PIPELINE_VERSION,
 )
 
 # Indeks fitur kunci dalam vektor fitur node (sorted alphabetically)
@@ -426,6 +427,8 @@ class GNNTrainer:
                 # Real-time checkpoint save (aman dari SSH putus)
                 rt_ckpt = {
                     "model_state_dict": {k: v.cpu() for k, v in self.model.state_dict().items()},
+                    "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
+                    "feature_columns": sorted(NORMALIZED_FEATURE_COLS),
                     "model_config": {
                         "in_channels": self.model.in_channels,
                         "hidden_dim": self.model.hidden_dim,
@@ -504,6 +507,8 @@ class GNNTrainer:
 
         checkpoint = {
             "model_state_dict": self.model.state_dict(),
+            "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
+            "feature_columns": sorted(NORMALIZED_FEATURE_COLS),
             "model_config": {
                 "in_channels": self.model.in_channels,
                 "hidden_dim": self.model.hidden_dim,

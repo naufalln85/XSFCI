@@ -18,6 +18,7 @@
 # ============================================================
 
 import time
+import copy
 from datetime import datetime
 from typing import Optional
 
@@ -174,6 +175,19 @@ class DryRunSandbox:
                 name=deployment_name,
                 namespace=source_namespace
             )
+
+            selector = copy.deepcopy(source_dep.spec.selector)
+            selector.match_labels = dict(selector.match_labels or {})
+            selector.match_labels["xfsci-sandbox"] = "true"
+            template = copy.deepcopy(source_dep.spec.template)
+            template.metadata = template.metadata or client.V1ObjectMeta()
+            template.metadata.labels = dict(template.metadata.labels or {})
+            template.metadata.labels.update({
+                "xfsci-sandbox": "true",
+                "xfsci-owner": "orchestrator",
+                "original-deployment": deployment_name,
+                "original-namespace": source_namespace,
+            })
             
             # Modifikasi untuk sandbox
             sandbox_dep = client.V1Deployment(
@@ -182,14 +196,15 @@ class DryRunSandbox:
                     namespace=self.namespace,
                     labels={
                         "xfsci-sandbox": "true",
+                        "xfsci-owner": "orchestrator",
                         "original-deployment": deployment_name,
                         "original-namespace": source_namespace
                     }
                 ),
                 spec=client.V1DeploymentSpec(
                     replicas=1,  # Minimal resource
-                    selector=source_dep.spec.selector,
-                    template=source_dep.spec.template
+                    selector=selector,
+                    template=template,
                 )
             )
             
@@ -312,7 +327,7 @@ class DryRunSandbox:
         
         try:
             if action.action == ActionType.SCALE_OUT:
-                replicas = action.parameters.replicas_to_add or 2
+                replicas = min(action.parameters.replicas_to_add or 2, 2)
                 dep = self.apps_v1.read_namespaced_deployment(
                     name=action.target_deployment,
                     namespace=self.namespace
@@ -327,7 +342,10 @@ class DryRunSandbox:
                 # Delete pod untuk trigger restart
                 pods = self.core_v1.list_namespaced_pod(
                     namespace=self.namespace,
-                    label_selector=f"original-deployment={action.target_deployment.replace('sandbox-', '')}"
+                    label_selector=(
+                        "xfsci-sandbox=true,xfsci-owner=orchestrator,"
+                        f"original-deployment={action.target_deployment.replace('sandbox-', '')}"
+                    )
                 )
                 if pods.items:
                     self.core_v1.delete_namespaced_pod(
@@ -355,7 +373,11 @@ class DryRunSandbox:
         
         try:
             pods = self.core_v1.list_namespaced_pod(
-                namespace=self.namespace
+                namespace=self.namespace,
+                label_selector=(
+                    "xfsci-sandbox=true,xfsci-owner=orchestrator,"
+                    f"original-deployment={action.target_deployment.replace('sandbox-', '')}"
+                ),
             )
             
             running_pods = [
@@ -391,15 +413,21 @@ class DryRunSandbox:
         
         try:
             # Hapus semua deployment
-            deps = self.apps_v1.list_namespaced_deployment(namespace=self.namespace)
+            deps = self.apps_v1.list_namespaced_deployment(
+                namespace=self.namespace,
+                label_selector="xfsci-sandbox=true,xfsci-owner=orchestrator",
+            )
             for dep in deps.items:
                 self.apps_v1.delete_namespaced_deployment(
                     name=dep.metadata.name,
                     namespace=self.namespace
                 )
             
-            # Hapus semua pod (orphans)
-            pods = self.core_v1.list_namespaced_pod(namespace=self.namespace)
+            # Hanya hapus pod berlabel XFSCI; jangan menyentuh resource lain di namespace.
+            pods = self.core_v1.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector="xfsci-sandbox=true,xfsci-owner=orchestrator",
+            )
             for pod in pods.items:
                 self.core_v1.delete_namespaced_pod(
                     name=pod.metadata.name,

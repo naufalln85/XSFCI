@@ -171,8 +171,12 @@ from models.gnn.gnn_predictor import GNNPredictor
 p = GNNPredictor()
 if p.is_ready:
     result = p.predict_target('cartservice')
-    print(f'  ✅ GNN Inference OK! Risk Score: {result.risk_score:.3f} | Anomaly: {result.anomaly_type.value}')
-    print(f'     Root Cause: {result.root_cause_service} | Confidence: {result.confidence:.2%}')
+    if result is None:
+        print('  ⚠️ Inference skipped: provide a complete live 11-service × 21-feature snapshot.')
+        print('     A no-input call is not a valid model accuracy or RCA test.')
+    else:
+        print(f'  ✅ GNN Inference OK! Risk Score: {result.risk_score:.3f} | Anomaly: {result.anomaly_type.value}')
+        print(f'     Root Cause: {result.root_cause_service} | Confidence: {result.confidence:.2%}')
 else:
     print('  ⚠️ GNN Model loaded but not ready (weights mismatch?)')
 " 2>/dev/null || echo -e "${YELLOW}  ⚠️ GNN test skipped (dependencies may be missing).${NC}"

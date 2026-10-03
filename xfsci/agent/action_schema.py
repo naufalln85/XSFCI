@@ -66,7 +66,7 @@ class MLPrediction(BaseModel):
 
 
 class PandasMetrics(BaseModel):
-    """Output dari Pandas Metric Processor — 100% fakta numerik."""
+    """Nilai numerik hasil proses telemetri; akurasi bergantung pada sumber datanya."""
     timestamp: datetime
     target_pod: str
     target_node: str
@@ -105,6 +105,10 @@ class SituationReport(BaseModel):
     rag_runbook_content: str = Field("", description="Isi runbook SOP dari RAG")
     rag_similarity_score: float = Field(0.0, ge=0.0, le=1.0, description="Kemiripan RAG")
     past_experiences: List[str] = Field(default_factory=list, description="Pengalaman serupa")
+    diagnostic_evidence: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Bukti pod, log, event, dan klasifikasi diagnosis dari Kubernetes API"
+    )
 
 
 # --- Output Schemas (Keputusan AI Agent) ---

@@ -4,7 +4,7 @@ XFSCI GNN Predictor - Layer 2: Cloud Intelligence Inference
 ============================================================
 Modul inferensi real-time untuk GNN (DualHeadGATv2):
   1. Memuat bobot model terlatih (gnn_best.pt)
-  2. Mengonstruksi tensor fitur [11, 18] dari metrik pod cluster
+  2. Mengonstruksi tensor fitur [11, 21] dari metrik seluruh service cluster
   3. Menjalankan forward pass GNN (< 3ms di CPU)
   4. Menghasilkan objek MLPrediction (Action Schema) yang siap
       dikonsumsi langsung oleh Orchestrator & Decision Agent (Antigravity).
@@ -40,6 +40,7 @@ from models.gnn.graph_dataset import (
     LABEL_MAP,
     IDX_TO_LABEL,
     NORMALIZED_FEATURE_COLS,
+    FEATURE_PIPELINE_VERSION,
     build_static_edge_index,
     extract_service_name,
 )
@@ -79,6 +80,7 @@ class GNNPredictor:
 
         self.model: Optional[DualHeadGATv2] = None
         self.scaler_params: Dict[str, Any] = {}
+        self.feature_contract_version: Optional[str] = None
         self.edge_index = build_static_edge_index().to(self.device)
         self.is_ready = False
 
@@ -96,6 +98,13 @@ class GNNPredictor:
                 logger.warning(f"Gagal membaca scaler params: {e}")
         else:
             logger.warning(f"Scaler params tidak ditemukan di {self.scaler_path}, menggunakan fallback default.")
+        contract_path = self.scaler_path.parent / "feature_contract.json"
+        if contract_path.exists():
+            try:
+                with open(contract_path, "r", encoding="utf-8") as f:
+                    self.feature_contract_version = json.load(f).get("version")
+            except Exception as e:
+                logger.warning(f"Gagal membaca feature contract: {e}")
 
     def _load_model(self):
         """Memuat bobot checkpoint model."""
@@ -106,6 +115,27 @@ class GNNPredictor:
 
         try:
             checkpoint = torch.load(self.weights_path, map_location=self.device)
+            checkpoint_version = checkpoint.get("feature_pipeline_version")
+            checkpoint_features = checkpoint.get("feature_columns")
+            if checkpoint_version != FEATURE_PIPELINE_VERSION:
+                logger.warning(
+                    "GNN checkpoint tidak cocok dengan preprocessing live: "
+                    f"checkpoint={checkpoint_version!r}, runtime={FEATURE_PIPELINE_VERSION!r}. "
+                    "Latih ulang GNN sebelum mengaktifkan inference."
+                )
+                self.is_ready = False
+                return
+            if self.feature_contract_version != FEATURE_PIPELINE_VERSION:
+                logger.warning(
+                    "GNN inference dinonaktifkan: scaler/feature contract belum dihasilkan oleh pipeline terbaru. "
+                    "Jalankan feature_engineer.py dan latih ulang GNN."
+                )
+                self.is_ready = False
+                return
+            if checkpoint_features != sorted(NORMALIZED_FEATURE_COLS):
+                logger.warning("GNN checkpoint memakai urutan/schema fitur yang berbeda; inference dinonaktifkan.")
+                self.is_ready = False
+                return
             cfg = checkpoint.get("model_config", {
                 "in_channels": len(NORMALIZED_FEATURE_COLS),
                 "hidden_dim": 32,
@@ -127,8 +157,14 @@ class GNNPredictor:
             self.is_ready = True
 
             metrics = checkpoint.get("training_metrics", {})
-            test_acc = metrics.get("test_accuracy", 0.0)
-            logger.success(f"GNN Model loaded successfully! (Test Acc: {test_acc*100:.2f}%)")
+            test_acc = metrics.get(
+                "test_accuracy",
+                metrics.get("cluster_anomaly_accuracy", metrics.get("node_accuracy")),
+            )
+            if test_acc is None:
+                logger.success("GNN Model loaded successfully! (test accuracy not recorded in checkpoint)")
+            else:
+                logger.success(f"GNN Model loaded successfully! (Cluster Test Acc: {test_acc*100:.2f}%)")
         except Exception as e:
             logger.error(f"Gagal memuat model GNN: {e}")
             self.is_ready = False
@@ -146,10 +182,13 @@ class GNNPredictor:
         num_features = len(NORMALIZED_FEATURE_COLS)
         x_matrix = np.zeros((len(SERVICE_NAMES), num_features), dtype=np.float32)
 
+        # graph_dataset trains on sorted(features_to_use); inference must use
+        # exactly the same column ordering or every feature lands in the wrong slot.
+        ordered_features = sorted(NORMALIZED_FEATURE_COLS)
         for svc_idx, svc_name in enumerate(SERVICE_NAMES):
             svc_metrics = current_metrics_map.get(svc_name, {})
 
-            for f_idx, feat_col in enumerate(NORMALIZED_FEATURE_COLS):
+            for f_idx, feat_col in enumerate(ordered_features):
                 base_col = feat_col.replace("_norm", "")
                 val = float(svc_metrics.get(feat_col, svc_metrics.get(base_col, 0.0)))
 
@@ -160,6 +199,10 @@ class GNNPredictor:
                     if mx > mn:
                         val = (val - mn) / (mx - mn)
                         val = np.clip(val, 0.0, 1.0)
+                    else:
+                        # Fitur konstan pada data latih (contoh request_rate max=min=0)
+                        # harus bernilai 0, bukan nilai mentah yang tak ternormalisasi.
+                        val = 0.0
 
                 x_matrix[svc_idx, f_idx] = val
 
@@ -167,7 +210,7 @@ class GNNPredictor:
 
     def predict_target(self,
                        target_deployment: str,
-                       current_metrics_map: Optional[Dict[str, Dict[str, float]]] = None) -> MLPrediction:
+                       current_metrics_map: Optional[Dict[str, Dict[str, float]]] = None) -> Optional[MLPrediction]:
         """
         Fungsi utama yang dipanggil oleh Orchestrator Step [2/7].
         
@@ -179,27 +222,85 @@ class GNNPredictor:
           MLPrediction (Pydantic object)
         """
         target_svc = extract_service_name(target_deployment)
-        target_idx = SERVICE_TO_IDX.get(target_svc, 0)
+        if target_svc not in SERVICE_TO_IDX:
+            logger.warning(f"GNN inference skipped: unknown service '{target_deployment}'")
+            return None
+        target_idx = SERVICE_TO_IDX[target_svc]
 
         # Fallback jika model belum siap / belum dilatih
         if not self.is_ready or self.model is None:
-            logger.warning("GNN Model belum aktif. Fallback ke default safe prediction.")
-            return MLPrediction(
-                risk_score=0.1,
-                anomaly_type=AnomalyType.NORMAL,
-                confidence=0.80,
-                root_cause_service=target_svc,
-                top3_root_causes=[{"rank": 1, "service": target_svc, "score": 0.1, "percentage": "10.0%"}],
-                fault_probabilities={"normal": 0.9, "cpu_overload": 0.025, "memory_leak": 0.025, "pod_crash_loop": 0.025, "network_latency": 0.025},
-                time_to_failure_minutes=None,
-                cascade_risk=[]
-            )
+            logger.warning("GNN prediction skipped: model/checkpoint is not ready")
+            return None
 
         start_time = time.time()
 
-        # Konstruksi input tensor
-        if current_metrics_map is None:
-            current_metrics_map = {}
+        # Model dilatih dengan snapshot lengkap 11 service × 21 fitur. Jangan
+        # menjalankan GNN dengan node/kolom kosong yang akan tampak seperti nilai 0.
+        if not current_metrics_map:
+            logger.warning("GNN inference skipped: no live metrics snapshot was provided")
+            return None
+
+        expected_scaler_features = {feature.removesuffix("_norm") for feature in NORMALIZED_FEATURE_COLS}
+        missing_scaler_features = sorted(expected_scaler_features - set(self.scaler_params))
+        if missing_scaler_features:
+            logger.warning(
+                "GNN inference skipped: scaler schema incomplete; "
+                f"missing={missing_scaler_features}"
+            )
+            return None
+
+        # A min-max constant feature carries no information in the trained model.
+        # Do not silently map a newly non-zero live value (e.g. request_rate) to 0.
+        for service in SERVICE_NAMES:
+            values = current_metrics_map[service]
+            for feature in expected_scaler_features:
+                if feature in values or f"{feature}_norm" in values:
+                    continue
+                params = self.scaler_params[feature]
+                mn = float(params.get("min", 0.0))
+                mx = float(params.get("max", 1.0))
+                if mx <= mn and abs(float(values[feature]) - mn) > 1e-8:
+                    logger.warning(
+                        "GNN inference skipped: live feature falls outside a constant training column; "
+                        f"{service}.{feature}={values[feature]} while training constant={mn}. "
+                        "Collect representative telemetry and retrain the model."
+                    )
+                    return None
+
+        ordered_features = sorted(NORMALIZED_FEATURE_COLS)
+        missing_services = [svc for svc in SERVICE_NAMES if svc not in current_metrics_map]
+        missing_features = {
+            svc: [
+                feature for feature in ordered_features
+                if feature not in current_metrics_map.get(svc, {})
+                and feature.removesuffix("_norm") not in current_metrics_map.get(svc, {})
+            ]
+            for svc in SERVICE_NAMES if svc in current_metrics_map
+        }
+        incomplete_services = [svc for svc, features in missing_features.items() if features]
+        malformed_features = []
+        for svc in SERVICE_NAMES:
+            values = current_metrics_map.get(svc, {})
+            for feature in ordered_features:
+                key = feature if feature in values else feature.removesuffix("_norm")
+                if key not in values:
+                    continue
+                try:
+                    if not np.isfinite(float(values[key])):
+                        malformed_features.append(f"{svc}.{key}")
+                except (TypeError, ValueError):
+                    malformed_features.append(f"{svc}.{key}")
+        if missing_services or incomplete_services or malformed_features:
+            logger.warning(
+                "GNN inference skipped: incomplete snapshot. "
+                f"Missing services={missing_services}; "
+                f"services with missing features={incomplete_services}; "
+                f"invalid values={malformed_features}. "
+                "Expected all 11 services with 21 model features; using the orchestrator's non-GNN fallback."
+            )
+            return None
+
+        # Konstruksi input tensor dengan schema lengkap yang sesuai data latih.
         x_tensor = self.build_feature_tensor_from_metrics(current_metrics_map)
 
         with torch.no_grad():
@@ -306,6 +407,12 @@ if __name__ == "__main__":
     logger.info("Testing GNNPredictor...")
     predictor = GNNPredictor()
     pred = predictor.predict_target("cartservice")
+    if pred is None:
+        logger.warning(
+            "No prediction was produced: this entry point needs a complete live "
+            "11-service × 21-feature snapshot. The no-input dummy call is not an accuracy test."
+        )
+        raise SystemExit(0)
     print(f"\nMLPrediction Result:")
     print(f"  Risk Score   : {pred.risk_score}")
     print(f"  Anomaly Type : {pred.anomaly_type}")

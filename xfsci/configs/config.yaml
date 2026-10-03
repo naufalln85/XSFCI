@@ -167,12 +167,7 @@ ai_agent:
     model_priority: "claude-opus-4-6-thinking"   # Prioritas: Claude Opus 4.6 (Thinking) — Deep SRE Reasoning
     fallback_model: "gemini-3.8-flash-high"      # Fallback: Gemini 3.8 Flash (High) — Cepat & handal
     sandbox_mode: true                           # Enforce execution inside protected sandbox
-    allowed_commands:
-      - "kubectl"
-      - "curl"
-      - "cat"
-      - "grep"
-      - "bash"
+    allowed_commands: []              # LLM tidak mendapat akses shell; orchestrator memakai Kubernetes API
     timeout_seconds: 90
     retry_attempts: 2
 
@@ -192,6 +187,12 @@ ai_agent:
     mode: "rule_based"           # rule_based | escalate_all
     enabled: true
 
+  # Fast path deterministik untuk overload yang jelas; insiden novel tetap ke Antigravity.
+  fast_path:
+    enabled: true
+    cpu_threshold_percent: 85
+    minimum_request_rate_rps: 1
+
 # --- RAG Knowledge Base ---
 rag:
   vector_store: "chromadb"       # chromadb | faiss
@@ -209,6 +210,8 @@ scoring:
   urgency:
     ml_risk_score_weight: 40      # Max 40 poin dari ML prediction
     ml_confidence_weight: 20      # Max 20 poin dari confidence
+    cpu_overload_threshold_pct: 80
+    cpu_overload_score: 15
     memory_leak_threshold_mb_min: 5   # > 5 MB/min = leak
     memory_leak_score: 15
     error_rate_threshold_pct: 5       # > 5% error = masalah
@@ -269,6 +272,10 @@ experience_memory:
 
 # --- Self-Healing Engine (Layer 5) ---
 healing:
+  # Namespace yang boleh diubah oleh self-healing. Tambahkan namespace secara eksplisit.
+  allowed_namespaces: ["demo"]
+  # Aksi berdampak tinggi selalu meminta persetujuan operator interaktif.
+  approval_required_actions: ["scale_in"]
   # Safety Guardrails
   guardrails:
     confidence_threshold: 0.85  # Minimum AI confidence to execute
@@ -282,8 +289,10 @@ healing:
   # Kubernetes executor settings
   k8s:
     scale_out_replicas: 2       # Default: add 2 replicas on scale-out
+    max_autonomous_scale_out: 2 # Lebih dari ini perlu approval operator
     max_replicas: 10            # Max replicas per deployment
     drain_timeout_seconds: 60
+    restart_cooldown_seconds: 900 # Maksimal satu restart otomatis per 15 menit
 
 # --- Explainability (Layer 6: XAI) ---
 explainability:

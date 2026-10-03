@@ -7,8 +7,8 @@ dan topologi microservice (topology_*.json) menjadi sequence
 graf teratribusi PyTorch Geometric (torch_geometric.data.Data).
 
 Fitur Graf:
-  - Nodes (11 pods): Online Boutique microservices
-  - Node Features (18): Metrik ternormalisasi [0, 1]
+  - Nodes (11 services): Online Boutique microservices
+  - Node Features (21): Metrik ternormalisasi [0, 1]
   - Edges:
       1. Network Service Dependencies (Bidirectional)
       2. Host Co-location Edges (Node Worker 1, 2, 3)
@@ -33,6 +33,12 @@ import numpy as np
 import pandas as pd
 import torch
 from loguru import logger
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models.gnn.feature_contract import FEATURE_PIPELINE_VERSION
 
 try:
     from torch_geometric.data import Data, Dataset
@@ -278,7 +284,7 @@ class MicroserviceGraphDataset(Dataset):
     Dataset sequence snapshot graf untuk GNN.
     
     Setiap sampel Data berisi:
-      x         : Tensor [11, 18] fitur metrik per node
+      x         : Tensor [11, 21] fitur metrik per node
       edge_index: Tensor [2, E] relasi topologi graf
       y         : Tensor [11] label anomali per node (0 s/d 4)
       y_graph   : Tensor [1] skor urgensi global (0.0 jika semua normal, 1.0 jika ada fault)
@@ -340,6 +346,12 @@ def create_graph_snapshots_from_csv(csv_path: Path,
                 features_to_use.append(norm_col)
 
     features_to_use = sorted(list(set(features_to_use)))
+    if features_to_use != sorted(NORMALIZED_FEATURE_COLS):
+        raise ValueError(
+            f"Dataset tidak memenuhi kontrak fitur {FEATURE_PIPELINE_VERSION}: "
+            f"ditemukan {len(features_to_use)}/{len(NORMALIZED_FEATURE_COLS)} fitur ternormalisasi. "
+            "Jalankan ulang feature_engineer.py sebelum melatih GNN."
+        )
     num_features = len(features_to_use)
     logger.info(f"Menggunakan {num_features} fitur node: {features_to_use[:4]} ...")
 
@@ -363,19 +375,20 @@ def create_graph_snapshots_from_csv(csv_path: Path,
         x_matrix = np.zeros((NUM_SERVICES, num_features), dtype=np.float32)
         y_vector = np.zeros(NUM_SERVICES, dtype=np.int64)
 
-        # Isi status per service yang ada di group
+        # Gabungkan replica dengan mean agar satu service menjadi satu node,
+        # sama dengan snapshot runtime yang dikirim ke GNN.
         seen_services = set()
-        for _, row in group.iterrows():
-            svc = row["service_name"]
+        service_rows = group.groupby("service_name", sort=False)
+        for svc, service_group in service_rows:
             svc_idx = SERVICE_TO_IDX[svc]
-            feat_vals = row[features_to_use].values.astype(np.float32)
+            feat_vals = service_group[features_to_use].mean(axis=0).values.astype(np.float32)
             
             # Update cache
             last_known_features[svc] = feat_vals
             seen_services.add(svc)
 
             x_matrix[svc_idx] = feat_vals
-            y_vector[svc_idx] = max(int(y_vector[svc_idx]), int(row["label_id"]))
+            y_vector[svc_idx] = int(service_group["label_id"].max())
 
         # Forward-fill untuk service yang scrape-nya miss di timestamp ini
         for svc in SERVICE_NAMES:
@@ -414,6 +427,18 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
     secara kronologis (urutan waktu) untuk mencegah data leakage.
     """
     base_dir = Path(__file__).resolve().parent.parent.parent
+    contract_path = base_dir / "data" / "processed" / "feature_contract.json"
+    if not contract_path.exists():
+        raise FileNotFoundError(
+            f"Feature contract tidak ditemukan: {contract_path}. Jalankan feature_engineer.py terlebih dahulu."
+        )
+    with open(contract_path, "r", encoding="utf-8") as contract_file:
+        feature_contract = json.load(contract_file)
+    if feature_contract.get("version") != FEATURE_PIPELINE_VERSION:
+        raise ValueError(
+            f"Feature contract versi {feature_contract.get('version')!r}; "
+            f"trainer memerlukan {FEATURE_PIPELINE_VERSION!r}. Jalankan ulang feature_engineer.py."
+        )
     if csv_path is None:
         csv_path = base_dir / "data" / "processed" / "dataset_ready.csv"
     

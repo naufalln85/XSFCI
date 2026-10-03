@@ -11,7 +11,7 @@ Metrik yang dikumpulkan per pod:
   - Pod restart count
   - Network RX/TX bytes per second
   - Request rate (ops/sec) - jika tersedia
-  - Error rate (%) - jika tersedia
+  - Error rate fraction [0, 1] - jika tersedia
   - Latency P50/P95/P99 (ms) - jika tersedia
 
 Cara pakai:
@@ -117,14 +117,14 @@ QUERIES = {
         f'}}[1m])) by (pod)'
     ),
     
-    # HTTP error rate per pod (4xx + 5xx / total)
+    # HTTP error rate fraction [0, 1] per pod (4xx + 5xx / total)
     "error_rate": (
         f'sum(rate(http_server_requests_seconds_count{{'
         f'namespace="{TARGET_NAMESPACE}", status=~"4..|5.."'
         f'}}[1m])) by (pod) / '
         f'sum(rate(http_server_requests_seconds_count{{'
         f'namespace="{TARGET_NAMESPACE}"'
-        f'}}[1m])) by (pod) * 100'
+        f'}}[1m])) by (pod)'
     ),
 }
 

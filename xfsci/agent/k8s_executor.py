@@ -22,7 +22,9 @@
 # ============================================================
 
 import time
-from datetime import datetime
+import re
+import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 import yaml
@@ -65,6 +67,14 @@ class K8sExecutor:
         self.default_scale_add = k8s_cfg.get("scale_out_replicas", 2)
         self.drain_timeout = k8s_cfg.get("drain_timeout_seconds", 60)
         self.post_heal_wait = guardrail_cfg.get("post_healing_wait_seconds", 30)
+        self.approval_required_actions = set(
+            healing_cfg.get("approval_required_actions", ["scale_in", "migrate_pod"])
+        )
+        self.allowed_namespaces = set(
+            healing_cfg.get("allowed_namespaces", [self.default_namespace])
+        )
+        self.max_autonomous_scale_out = int(k8s_cfg.get("max_autonomous_scale_out", 2))
+        self.restart_cooldown_seconds = int(k8s_cfg.get("restart_cooldown_seconds", 900))
 
         # Setup Kubernetes client
         self.k8s_ready = False
@@ -85,6 +95,166 @@ class K8sExecutor:
             logger.success(f"K8sExecutor ready | Namespace: {self.default_namespace} | Max replicas: {self.max_replicas}")
         else:
             logger.warning("K8sExecutor in SIMULATION mode (no live K8s connection)")
+
+    @staticmethod
+    def _redact_log_text(value: str, limit: int = 3000) -> str:
+        """Batasi dan sensor nilai sensitif sebelum bukti dikirim ke LLM."""
+        value = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", value)
+        value = re.sub(
+            r"(?i)([\"']?(?:password|passwd|token|secret|api[_-]?key|access[_-]?key|credential|private[_-]?key)[\"']?\s*:\s*[\"'])[^\"']*([\"'])",
+            r"\1[REDACTED]\2", value,
+        )
+        value = re.sub(
+            r"(?i)(password|passwd|token|secret|api[_-]?key|access[_-]?key|credential|private[_-]?key)(\s*[:=]\s*)[^\s,;]+",
+            r"\1\2[REDACTED]", value,
+        )
+        return value[-limit:]
+
+    def collect_incident_evidence(self, deployment: str, namespace: str,
+                                  pod_name: str = None) -> dict:
+        """Ambil bukti Kubernetes read-only, dibatasi dan disensor, untuk diagnosis."""
+        evidence = {
+            "available": False, "namespace": namespace,
+            "deployment": deployment, "pods": [], "events": [],
+            "diagnosis": "unknown", "diagnosis_summary": "Bukti Kubernetes tidak tersedia.",
+        }
+        if not self.k8s_ready:
+            evidence["diagnosis_summary"] = "Kubernetes API tidak terhubung; jangan jalankan remediasi otomatis berbasis asumsi."
+            return evidence
+
+        try:
+            dep = self.apps_v1.read_namespaced_deployment(name=deployment, namespace=namespace)
+            selector = (dep.spec.selector.match_labels or {}) if dep.spec.selector else {}
+            label_selector = ",".join(f"{key}={value}" for key, value in selector.items())
+            pods = []
+            if pod_name:
+                try:
+                    requested_pod = self.core_v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+                    pod_labels = requested_pod.metadata.labels or {}
+                    if all(pod_labels.get(key) == value for key, value in selector.items()):
+                        pods = [requested_pod]
+                except ApiException:
+                    pods = []
+            if not pods and label_selector:
+                pods = self.core_v1.list_namespaced_pod(
+                    namespace=namespace, label_selector=label_selector, limit=3
+                ).items
+
+            evidence["available"] = True
+            evidence["deployment_state"] = {
+                "desired_replicas": dep.spec.replicas or 0,
+                "ready_replicas": dep.status.ready_replicas or 0,
+                "available_replicas": dep.status.available_replicas or 0,
+                "strategy": getattr(getattr(dep.spec, "strategy", None), "type", None),
+            }
+            evidence["pods"] = []
+            for pod in pods[:5]:
+                item = {
+                    "name": pod.metadata.name,
+                    "phase": pod.status.phase,
+                    "node": pod.spec.node_name,
+                    "conditions": [
+                        {"type": c.type, "status": c.status, "reason": c.reason}
+                        for c in (pod.status.conditions or [])
+                        if c.type in ("Ready", "ContainersReady", "PodScheduled")
+                    ],
+                    "containers": [],
+                    "events": [],
+                }
+                for status in (pod.status.container_statuses or []):
+                    state = status.state
+                    terminated = (state.last_state.terminated if state and state.last_state else None)
+                    waiting = state.waiting if state else None
+                    container = {
+                        "name": status.name,
+                        "ready": status.ready,
+                        "restart_count": status.restart_count,
+                        "waiting_reason": waiting.reason if waiting else None,
+                        "waiting_message": self._redact_log_text(waiting.message or "", 500) if waiting else None,
+                        "last_termination_reason": terminated.reason if terminated else None,
+                        "last_exit_code": terminated.exit_code if terminated else None,
+                        "last_finished_at": str(terminated.finished_at) if terminated and terminated.finished_at else None,
+                    }
+                    try:
+                        current_log = self.core_v1.read_namespaced_pod_log(
+                            name=pod.metadata.name, namespace=namespace,
+                            container=status.name, tail_lines=30, timestamps=True,
+                        )
+                        container["current_log"] = self._redact_log_text(current_log or "")
+                    except Exception as exc:
+                        container["current_log_error"] = type(exc).__name__
+                    if status.restart_count:
+                        try:
+                            previous_log = self.core_v1.read_namespaced_pod_log(
+                                name=pod.metadata.name, namespace=namespace,
+                                container=status.name, tail_lines=30, timestamps=True,
+                                previous=True,
+                            )
+                            container["previous_log"] = self._redact_log_text(previous_log or "")
+                        except Exception as exc:
+                            container["previous_log_error"] = type(exc).__name__
+                    item["containers"].append(container)
+
+                try:
+                    pod_events = self.core_v1.list_namespaced_event(
+                        namespace=namespace,
+                        field_selector=f"involvedObject.name={pod.metadata.name}",
+                        limit=30,
+                    ).items
+                    item["events"] = [
+                        {"type": ev.type, "reason": ev.reason,
+                         "message": self._redact_log_text(ev.message or "", 300),
+                         "count": ev.count, "last_timestamp": str(ev.last_timestamp or ev.event_time or "")}
+                        for ev in pod_events[-8:]
+                    ]
+                except Exception:
+                    pass
+                evidence["pods"].append(item)
+
+            # Klasifikasi berbasis bukti eksplisit; tidak mengasumsikan restart akan menyelesaikan masalah.
+            texts = []
+            for pod in evidence["pods"]:
+                texts.extend(str(c.get(k) or "") for c in pod["containers"]
+                             for k in ("waiting_reason", "waiting_message", "last_termination_reason", "current_log", "previous_log"))
+                texts.extend(str(ev.get("reason", "")) + " " + str(ev.get("message", "")) for ev in pod["events"])
+            diagnostic_text = "\n".join(texts).lower()
+            if "oomkilled" in diagnostic_text:
+                diagnosis = "oom_killed"
+                summary = "Container terakhir dihentikan karena OOMKilled; restart/scale-out saja tidak memperbaiki batas memori atau kebocoran."
+            elif any(x in diagnostic_text for x in ("imagepullbackoff", "errimagepull", "failed to pull image")):
+                diagnosis = "image_pull"
+                summary = "Bukti menunjukkan image gagal ditarik; periksa image/tag dan kredensial registry."
+            elif any(x in diagnostic_text for x in ("failedmount", "failed to mount", "failed to attach", "configmap", "secret not found")):
+                diagnosis = "config_mount"
+                summary = "Bukti menunjukkan volume/config/secret gagal dipasang; periksa resource konfigurasi."
+            elif any(x in diagnostic_text for x in ("connection refused", "name or service not known", "temporary failure in name resolution", "deadline exceeded", "connection reset")):
+                diagnosis = "dependency_or_network"
+                summary = "Log menunjukkan kegagalan koneksi/dependency; verifikasi dependency dan jaringan sebelum restart."
+            elif any(x in diagnostic_text for x in ("traceback", "uncaught exception", "fatal error", "syntaxerror", "unhandled exception")):
+                diagnosis = "application_error"
+                summary = "Log menunjukkan error aplikasi; jika berulang, perlu investigasi kode/config sebelum remediasi otomatis."
+            elif (
+                any(ev.get("reason") == "Unhealthy" for pod in evidence["pods"] for ev in pod["events"])
+                and any(
+                    condition.get("type") == "Ready" and condition.get("status") != "True"
+                    for pod in evidence["pods"] for condition in pod["conditions"]
+                )
+            ):
+                diagnosis = "probe_failure"
+                summary = "Event Unhealthy dan status Ready saat ini gagal; restart terbatas dapat dipertimbangkan bila deployment masih memiliki pod Ready lain."
+            elif any((c.get("waiting_reason") == "CrashLoopBackOff") for pod in evidence["pods"] for c in pod["containers"]):
+                diagnosis = "crash_loop_unknown"
+                summary = "CrashLoopBackOff terkonfirmasi, tetapi bukti belum cukup untuk memastikan penyebabnya."
+            else:
+                diagnosis = "unknown"
+                summary = "Tidak ditemukan penyebab eksplisit pada log/event yang diambil; jangan mengarang root cause."
+            evidence["diagnosis"] = diagnosis
+            evidence["diagnosis_summary"] = summary
+            return evidence
+        except Exception as exc:
+            evidence["error"] = type(exc).__name__
+            evidence["diagnosis_summary"] = "Gagal membaca bukti Kubernetes; tindakan otomatis berbasis diagnosis diblokir."
+            return evidence
 
     # ──────────────────────────────────────────────────────
     # Public: Eksekusi keputusan AI
@@ -111,8 +281,40 @@ class K8sExecutor:
             f"{'─'*50}"
         )
 
+        if action in (ActionType.MIGRATE_POD, ActionType.RATE_LIMIT):
+            return {"success": False, "action": action.value,
+                    "details": f"Blocked: {action.value} has no safe operational implementation; no cluster change was made.",
+                    "simulated": dry_run}
+
         if dry_run:
             return self._simulate(action, target, ns, params)
+
+        if ns not in self.allowed_namespaces:
+            return {"success": False, "action": action.value,
+                    "details": f"Blocked: namespace '{ns}' is outside the healing allowlist {sorted(self.allowed_namespaces)}"}
+        if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", target or ""):
+            return {"success": False, "action": action.value,
+                    "details": "Blocked: invalid Kubernetes deployment name"}
+        if action == ActionType.SCALE_OUT and (params.replicas_to_add or self.default_scale_add) > self.max_autonomous_scale_out:
+            approval_reason = (
+                f"Permintaan scale_out +{params.replicas_to_add} melebihi batas otomatis "
+                f"+{self.max_autonomous_scale_out}."
+            )
+        else:
+            approval_reason = None
+
+        if action.value in self.approval_required_actions or approval_reason:
+            if not self._request_operator_approval(decision, approval_reason):
+                return {"success": False, "action": action.value,
+                        "details": "Blocked: persetujuan operator tidak diberikan atau terminal tidak interaktif",
+                        "approval_required": True}
+
+        if action == ActionType.RESTART_POD:
+            preflight = self._restart_preflight(target, ns)
+            if not preflight["allowed"]:
+                return {"success": False, "action": action.value,
+                        "details": preflight["reason"],
+                        "approval_required": preflight.get("approval_required", False)}
 
         if not self.k8s_ready:
             logger.error("K8s not connected — cannot execute live action")
@@ -141,6 +343,59 @@ class K8sExecutor:
             logger.error(f"K8sExecutor error: {e}")
             return {"success": False, "action": action.value,
                     "details": f"Execution error: {e}"}
+
+    @staticmethod
+    def _request_operator_approval(decision: ActionDecision, extra_reason: str = None) -> bool:
+        """Require a human at the terminal for configured high-impact changes."""
+        reason = extra_reason or "aksi ini dapat mengurangi kapasitas atau mengganggu banyak pod"
+        prompt = (
+            f"\nPERSETUJUAN DIPERLUKAN: {decision.action.value} "
+            f"{decision.target_deployment}/{decision.target_namespace}\n"
+            f"Alasan: {reason}\nAI: {decision.reasoning}\n"
+            "Ketik 'approve' untuk menjalankan aksi ini: "
+        )
+        if not sys.stdin.isatty():
+            logger.warning("High-impact action blocked: no interactive operator approval channel")
+            return False
+        try:
+            return input(prompt).strip().lower() == "approve"
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    def _restart_preflight(self, target: str, ns: str) -> dict:
+        """Guard restart by availability and a durable per-deployment cooldown."""
+        try:
+            dep = self.apps_v1.read_namespaced_deployment(name=target, namespace=ns)
+            desired = dep.spec.replicas or 0
+            ready = dep.status.ready_replicas or 0
+            if ready < 1 or desired < 1:
+                return {"allowed": False, "reason": "Restart blocked: deployment has no Ready pod; collect evidence and escalate."}
+            strategy = getattr(getattr(dep.spec, "strategy", None), "type", None)
+            if strategy not in (None, "RollingUpdate"):
+                return {"allowed": False,
+                        "reason": f"Restart blocked: deployment strategy '{strategy}' is not confirmed as RollingUpdate."}
+            if desired < 2:
+                ok = self._request_operator_approval(
+                    ActionDecision(action=ActionType.RESTART_POD, target_deployment=target,
+                                   target_namespace=ns, confidence=1.0,
+                                   reasoning="Restart deployment with fewer than two replicas may cause downtime.")
+                )
+                if not ok:
+                    return {"allowed": False, "approval_required": True,
+                            "reason": "Restart blocked: one-replica deployment needs explicit operator approval."}
+            annotations = (dep.spec.template.metadata.annotations or {}) if dep.spec.template.metadata else {}
+            last_restart = annotations.get("xfsci.io/last-auto-restart-at")
+            if last_restart:
+                try:
+                    last = datetime.fromisoformat(last_restart.replace("Z", "+00:00"))
+                    if (datetime.now(last.tzinfo) - last).total_seconds() < self.restart_cooldown_seconds:
+                        return {"allowed": False,
+                                "reason": f"Restart blocked: deployment cooldown is {self.restart_cooldown_seconds}s."}
+                except ValueError:
+                    logger.warning("Invalid restart cooldown annotation; continuing with availability guard")
+            return {"allowed": True}
+        except Exception as exc:
+            return {"allowed": False, "reason": f"Restart blocked: preflight could not verify deployment ({type(exc).__name__})."}
 
     # ──────────────────────────────────────────────────────
     # Helpers: Ambil state sebelum / sesudah
@@ -194,7 +449,7 @@ class K8sExecutor:
         logger.info(f"🔄 Executing rolling restart on {target}/{ns}...")
 
         # Patch deployment dengan annotation restart trigger
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         body = {
             "spec": {
                 "template": {
@@ -202,6 +457,7 @@ class K8sExecutor:
                         "annotations": {
                             "kubectl.kubernetes.io/restartedAt": now,
                             "xfsci.io/restarted-by": "ai-agent",
+                            "xfsci.io/last-auto-restart-at": now,
                         }
                     }
                 }
@@ -276,40 +532,16 @@ class K8sExecutor:
         """Placeholder — membutuhkan Istio / NetworkPolicy."""
         logger.warning("⚠️ Rate limiting requires Istio or NetworkPolicy (not yet implemented)")
         return {
-            "success": True, "action": "rate_limit",
+            "success": False, "action": "rate_limit",
             "details": f"Rate limit logged (requires service mesh). Target RPS: {params.rate_limit_rps}",
         }
 
     def _do_migrate(self, target: str, ns: str, params: ActionParameters) -> dict:
-        """Migrasi pod ke node lain via delete (reschedule)."""
-        target_node = params.target_node
-        logger.info(f"🚚 Migrating {target}/{ns} pods (evict from current node)...")
-
-        # Strategi: Hapus pod agar Kubernetes reschedule ke node lain
-        pods = self.core_v1.list_namespaced_pod(
-            namespace=ns,
-            label_selector=f"app={target}"
-        )
-        deleted = 0
-        for pod in pods.items:
-            try:
-                self.core_v1.delete_namespaced_pod(
-                    name=pod.metadata.name, namespace=ns,
-                    grace_period_seconds=30
-                )
-                deleted += 1
-                logger.info(f"  🗑️ Deleted pod {pod.metadata.name} for rescheduling")
-            except Exception as e:
-                logger.warning(f"  Failed to delete {pod.metadata.name}: {e}")
-
-        if deleted > 0:
-            self._wait_for_rollout(target, ns, timeout=120)
-
-        after = self._get_deployment_state(target, ns)
+        """Migration needs explicit node-affinity/eviction support; do not delete pods as a proxy."""
+        logger.error("migrate_pod is disabled until a safe node-targeted eviction implementation exists")
         return {
-            "success": deleted > 0, "action": "migrate_pod",
-            "details": f"Deleted {deleted} pod(s) for rescheduling",
-            "after_state": after,
+            "success": False, "action": "migrate_pod",
+            "details": "Migration is not implemented safely; no pods were deleted.",
         }
 
     def _do_escalate(self, target: str, ns: str) -> dict:
@@ -339,6 +571,11 @@ class K8sExecutor:
             ActionType.ESCALATE:    f"Would escalate {target}/{ns} to human operator",
         }
         detail = messages.get(action, f"Unknown action: {action.value}")
+        requires_approval = action.value in self.approval_required_actions
+        if action == ActionType.SCALE_OUT and (params.replicas_to_add or self.default_scale_add) > self.max_autonomous_scale_out:
+            requires_approval = True
+        if requires_approval:
+            detail += " (operator approval required before live execution)"
         logger.info(f"🧪 [DRY-RUN] {detail}")
 
         # Jika K8s tersedia, ambil state aktual untuk referensi

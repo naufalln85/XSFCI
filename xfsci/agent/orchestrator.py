@@ -18,8 +18,8 @@
 #
 # Pipeline lengkap:
 # 1. Terima alert/trigger
-# 2. GNN Layer 2 → Root Cause Analysis (Top-3 RCA, 0% halusinasi)
-# 3. Pandas menganalisis metrik (100% eksak)
+# 2. GNN Layer 2 → kandidat Root Cause Analysis (Top-3, divalidasi dengan bukti)
+# 3. Pandas menganalisis metrik dari sumber telemetry yang tersedia
 # 4. Scoring Engine menghitung urgency (deterministik)
 # 5. RAG mengambil runbook SOP yang relevan
 # 6. Experience Memory mencari pengalaman serupa
@@ -172,20 +172,43 @@ class XFSCIOrchestrator:
                 request_rate_rps=0, error_rate_percent=0,
                 latency_p50_ms=0, latency_p99_ms=0
             )
+
+        # Kumpulkan bukti observasional sebelum AI memutuskan. Gagal baca bukti
+        # tidak menghentikan diagnosis metrik, tetapi membatasi aksi CrashLoop.
+        logger.info("[1b/8] 🔎 Collecting bounded pod logs, previous logs and Kubernetes events...")
+        diagnostic_evidence = self.k8s_executor.collect_incident_evidence(
+            deployment=deployment_name,
+            namespace=pandas_metrics.namespace or self.k8s_executor.default_namespace,
+            pod_name=pod_name,
+        )
+        logger.info(
+            f"Incident evidence: available={diagnostic_evidence.get('available')} | "
+            f"diagnosis={diagnostic_evidence.get('diagnosis')}"
+        )
         
         # ===== TAHAP 2: ML Prediction (GNN Layer 2) =====
+        gnn_feature_status = {
+            "available": False,
+            "reason": "GNN model is not ready or checkpoint requires retraining",
+        }
         if ml_prediction is None:
             if self.gnn_predictor and self.gnn_predictor.is_ready:
                 logger.info("[2/8] 🧠 Running GNN Layer 2 (Topology-Aware Anomaly Prediction)...")
                 try:
-                    metrics_dict = {deployment_name: pandas_metrics.model_dump()}
+                    metrics_dict, gnn_feature_status = self.pandas_processor.get_gnn_feature_snapshot()
+                    diagnostic_evidence["gnn_feature_snapshot"] = gnn_feature_status
                     ml_prediction = self.gnn_predictor.predict_target(
                         target_deployment=deployment_name,
                         current_metrics_map=metrics_dict
                     )
                 except Exception as e:
                     logger.warning(f"GNN inference error: {e}, falling back to rule-based.")
+                    gnn_feature_status = self.pandas_processor.last_gnn_snapshot_status
+                    diagnostic_evidence["gnn_feature_snapshot"] = gnn_feature_status
                     ml_prediction = None
+            elif self.gnn_predictor:
+                gnn_feature_status["reason"] = "GNN checkpoint/schema incompatible or model weights unavailable"
+                diagnostic_evidence["gnn_feature_snapshot"] = gnn_feature_status
 
             if ml_prediction is None:
                 logger.info("[2/8] 🧠 Using Pandas-detected anomaly (no ML model yet)...")
@@ -229,7 +252,8 @@ class XFSCIOrchestrator:
                     f"memory growth {pandas_metrics.memory_growth_rate_mb_per_min:+.1f} MB/min "
                     f"error rate {pandas_metrics.error_rate_percent:.1f}% "
                     f"latency {pandas_metrics.latency_p99_ms:.0f}ms "
-                    f"restarts {pandas_metrics.pod_restarts_1h}"
+                    f"restarts {pandas_metrics.pod_restarts_1h} "
+                    f"diagnosis {diagnostic_evidence.get('diagnosis', 'unknown')}"
                 )
                 rag_results = query_runbooks(query, top_k=3)
                 if rag_results:
@@ -268,7 +292,8 @@ class XFSCIOrchestrator:
             urgency_level=urgency_level,
             rag_runbook_content=rag_content,
             rag_similarity_score=rag_similarity,
-            past_experiences=experience_texts
+            past_experiences=experience_texts,
+            diagnostic_evidence=diagnostic_evidence,
         )
         
         # ===== TAHAP 6: AI Agent Decision =====
@@ -307,6 +332,70 @@ class XFSCIOrchestrator:
                 decision = self.decision_agent.select_action(
                     situation, action_priorities
                 )
+
+            # AI boleh memilih aksi, tetapi target harus sama dengan deployment
+            # yang sedang diinvestigasi. RCA lintas-service perlu insiden terpisah.
+            if decision.target_deployment == pod_name and pod_name != deployment_name:
+                # Alert boleh menunjuk nama pod, tetapi executor hanya memodifikasi deployment.
+                decision = decision.model_copy(update={
+                    "target_deployment": deployment_name,
+                    "target_namespace": pandas_metrics.namespace,
+                })
+            elif decision.target_deployment != deployment_name:
+                decision = ActionDecision(
+                    action=ActionType.ESCALATE,
+                    target_deployment=deployment_name,
+                    target_namespace=pandas_metrics.namespace,
+                    confidence=decision.confidence,
+                    reasoning=(
+                        f"Aksi diblokir: AI menunjuk target {decision.target_deployment}, "
+                        f"sedangkan bukti insiden ini dikumpulkan untuk {deployment_name}. "
+                        "Kumpulkan dossier terpisah untuk target RCA sebelum remediasi lintas-service."
+                    ),
+                    data_sources_used=decision.data_sources_used + ["target_scope_guard"],
+                )
+
+            diagnosis = diagnostic_evidence.get("diagnosis", "unknown")
+            non_remediable_diagnoses = {
+                "oom_killed", "image_pull", "config_mount", "dependency_or_network",
+                "application_error", "crash_loop_unknown",
+            }
+            if decision.action not in (ActionType.NO_OP, ActionType.ESCALATE):
+                block_reason = None
+                if not diagnostic_evidence.get("available") and pandas_metrics.pod_restarts_1h >= 3:
+                    block_reason = "Bukti pod/log/event tidak tersedia untuk CrashLoop; remediasi otomatis diblokir."
+                elif (
+                    decision.action == ActionType.SCALE_OUT
+                    and pandas_metrics.pod_restarts_1h >= 3
+                    and pandas_metrics.cpu_usage_avg_5m < 80
+                    and pandas_metrics.request_rate_rps < 1
+                    and pandas_metrics.error_rate_percent < 5
+                    and pandas_metrics.latency_p99_ms < 500
+                ):
+                    block_reason = (
+                        "Scale-out diblokir: restart berulang saja tidak membuktikan overload; "
+                        "CPU, request, error, dan latency belum menunjukkan tekanan trafik."
+                    )
+                elif diagnosis in non_remediable_diagnoses:
+                    block_reason = diagnostic_evidence.get("diagnosis_summary", diagnosis)
+                elif decision.action == ActionType.RESTART_POD and diagnosis != "probe_failure":
+                    block_reason = (
+                        "Restart otomatis hanya diizinkan bila event Unhealthy/probe failure "
+                        "terkonfirmasi; bukti saat ini tidak memenuhi syarat."
+                    )
+                if block_reason:
+                    decision = ActionDecision(
+                        action=ActionType.ESCALATE,
+                        target_deployment=deployment_name,
+                        target_namespace=pandas_metrics.namespace,
+                        confidence=max(decision.confidence, 0.85),
+                        reasoning=(
+                            f"Remediasi otomatis diblokir oleh diagnosis berbasis bukti: {block_reason} "
+                            f"Temuan: {diagnostic_evidence.get('diagnosis_summary', 'tidak ada ringkasan')} "
+                            "Langkah berikutnya: periksa bukti pod/log/event dan perbaiki penyebab sebelum mencoba ulang."
+                        ),
+                        data_sources_used=decision.data_sources_used + ["kubernetes_diagnostics", "remediation_policy"],
+                    )
             
             # Precision optimizer: Adjust scale parameters
             if decision.action in [ActionType.SCALE_OUT, ActionType.SCALE_IN]:
@@ -407,6 +496,10 @@ class XFSCIOrchestrator:
                 "urgency_level": urgency_level.value,
                 "anomaly_type": ml_prediction.anomaly_type.value,
                 "rag_similarity": rag_similarity,
+                "diagnosis": diagnostic_evidence.get("diagnosis", "unknown"),
+                "diagnosis_summary": diagnostic_evidence.get("diagnosis_summary", ""),
+                "diagnostic_evidence": diagnostic_evidence,
+                "gnn_feature_snapshot": gnn_feature_status,
             },
             "elapsed_seconds": round(elapsed, 2),
             "timestamp": datetime.utcnow().isoformat()
@@ -571,5 +664,6 @@ if __name__ == "__main__":
     logger.info(f"Target: {result['decision']['target_deployment']}")
     logger.info(f"Confidence: {result['decision']['confidence']:.0%}")
     logger.info(f"Reasoning: {result['decision']['reasoning']}")
+    logger.info(f"Diagnosis: {result['situation']['diagnosis']} — {result['situation']['diagnosis_summary']}")
     logger.info(f"Time: {result['elapsed_seconds']}s")
     logger.info(f"{'='*60}")

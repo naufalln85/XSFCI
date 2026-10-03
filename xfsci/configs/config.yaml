@@ -173,7 +173,7 @@ ai_agent:
       - "cat"
       - "grep"
       - "bash"
-    timeout_seconds: 180
+    timeout_seconds: 90
     retry_attempts: 2
 
 

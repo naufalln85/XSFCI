@@ -16,7 +16,7 @@ lang: id
 
 :::info
 💡 **Tentang Dokumen Ini**
-Dokumen ini merangkum seluruh hasil proyek **XFSCI** (*Explainable Federated Self-Healing Cloud Infrastructure*) dengan bahasa yang **santai, jelas, menggunakan analogi sehari-hari**, sehingga mudah dipahami oleh siapa saja—baik mahasiswa, dosen penguji, maupun praktisi industri.
+Dokumen ini merangkum seluruh hasil proyek **XFSCI** (*Cross-Service Fault Correlation Intelligence / Explainable Federated Self-Healing Cloud Infrastructure*) dengan bahasa yang **santai, jelas, menggunakan analogi sehari-hari**, sehingga mudah dipahami oleh siapa saja—baik mahasiswa, dosen penguji, maupun praktisi industri.
 :::
 
 ---
@@ -52,101 +52,98 @@ Kalau dianalogikan ke rumah sakit:
 
 ---
 
-## 3. 🧩 Arsitektur 8 Lapisan: "Sistem Organ Tubuh XFSCI"
+## 3. 🔍 Klarifikasi Penting: Posisi "Federated Learning" di XFSCI
 
-XFSCI memiliki 8 lapisan kerja dari bawah (alat ukur) sampai ke atas (keamanan global):
+:::warning
+⚠️ **Pertanyaan Kritis: Apakah Federated Learning Ada di Alur Penanganan Insiden?**
+**Jawabannya: TIDAK ADA (dan memang secara ilmu rekayasa sistem TIDAK BOLEH ada di alur real-time).**
+:::
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│  Layer 8: PERISAI KEAMANAN (Menolak rumus palsu & sabotase dari luar)  │
-├────────────────────────────────────────────────────────────────────────┤
-│  Layer 7: BELAJAR BERSAMA (Bagi-bagi ilmu antar data center rahasia)  │
-├────────────────────────────────────────────────────────────────────────┤
-│  Layer 6: PENERJEMAH CERDAS (Menjelaskan alasan AI ke bahasa manusia)  │
-├────────────────────────────────────────────────────────────────────────┤
-│  Layer 5: TANGAN EKSEKUTOR (Menjalankan perbaikan di Kubernetes)       │
-├────────────────────────────────────────────────────────────────────────┤
-│  Layer 4: OTAK PENGAMBIL KEPUTUSAN (Claude Opus & Gemini Flash)        │
-├────────────────────────────────────────────────────────────────────────┤
-│  Layer 3: SKOR GAWAT DARURAT & BUKU SOP (Skor 0-100 + SOP RAG)        │
-├────────────────────────────────────────────────────────────────────────┤
-│  Layer 2: DETEKTIF SILSILAH / GNN (Mencari biang kerok asli)           │
-├────────────────────────────────────────────────────────────────────────┤
-│  Layer 1: SENSOR PEMANTAU (Prometheus: Cek CPU, RAM, & Latensi)        │
-└────────────────────────────────────────────────────────────────────────┘
-```
+Mari kita bedakan antara **Dua Jalur Berbeda** di XFSCI:
 
-### Tabel Penjelasan Gampang Setiap Lapisan:
+### 1. Jalur Cepat: Penanganan Insiden Real-Time (*Fast Loop Remediation*)
+- **Tugas:** Menyelamatkan server yang sedang sakit secepat kilat (target: hitungan detik).
+- **Komponen:** `Prometheus` $\rightarrow$ `GNN (3.89 ms)` $\rightarrow$ `Scoring Engine` $\rightarrow$ `RAG Runbook` $\rightarrow$ `AI SRE Agent (Claude Opus / Gemini)` $\rightarrow$ `Eksekusi Kubernetes Sandbox`.
+- **Kenapa FL tidak ada di sini?** Karena Federated Learning adalah proses **pelatihan model (training)** yang butuh waktu puluhan menit hingga berjam-jam antar-server. Memasukkan FL ke alur penanganan darurat ibaratnya: *"Saat pasien sedang serangan jantung di UGD, para dokter malah menggelar seminar penelitian 3 jam sebelum menyuntik obat!"* Tentu saja pasien keburu meninggal!
 
-| Layer | Nama Keren | Bahasa Gampangnya | Tugas Nyatanya |
-|:---:|:---|:---|:---|
-| **1** | **Monitoring Layer** | Alat Tensimeter & Termometer | Mengukur CPU, RAM, jumlah eror, dan kelambatan respons setiap 5 detik via **Prometheus**. |
-| **2** | **Cloud Intelligence (GNN)** | Detektif Peta Hubungan | Menggunakan grafik interaksi antar-layanan untuk menebak pod mana yang jadi **biang kerok asli** dalam waktu cuma **3,89 milidetik**! |
-| **3** | **Scoring & Knowledge** | Triase UGD & Buku Panduan | Menghitung tingkat keparahan (Skor 0–100) dan mengambil buku SOP pertolongan pertama dari memori vektor (**ChromaDB**). |
-| **4** | **AI Agent Decision** | Dokter Spesialis Senior | **Claude Opus 4.6 (Thinking)** & **Gemini 3.8 Flash** berpikir logis menentukan tindakan paling pas. |
-| **5** | **Self-Healing Engine** | Tangan Perawat yang Menyuntik | Menjalankan tindakan nyata di Kubernetes (tambah replika server, restart aplikasi, dsb.) dengan sabuk pengaman (*safety net*). |
-| **6** | **Explainability (XAI)** | Laporan Rekam Medis Transparan | Menampilkan alasan gamblang: *"Saya restart server A karena memori bocor 50MB per menit dan bikin lambat 80%"*. |
-| **7** | **Federated Learning** | Pertukaran Ilmu Dokter Dunia | Berbagi kepintaran antar-pusat data tanpa perlu membocorkan data rahasia pengguna (*Privacy-Preserving*). |
-| **8** | **Security Layer** | Satpam Penangkal Sabotase | Menyaring jika ada data center lain yang mengirim rumus ngawur atau kena virus peretas. |
+### 2. Jalur Lambat: Pelatihan Model Latar Belakang (*Slow Loop Offline Training*)
+- **Tugas:** Menjalankan pelatihan model antar-data center (misal: klaster Jakarta, Bandung, Surabaya) di malam hari saat tidak ada trafik padat tanpa membocorkan log pribadi pengguna (*Privacy-Preserving*).
+- **Status Saat Ini:** Karena pengujian di VM5 saat ini berfokus pada pembuktian keandalan **1 klaster Kubernetes (Single-Cluster High Availability)**, modul Federated Learning dipisahkan (*decoupled*) dan disiapkan untuk ekspansi multi-kluster masa depan.
 
 ---
 
-## 4. ⚡ Alur Kerja 7-Tahap Saat Terjadi Masalah
+## 4. 🧩 Arsitektur Komponen XFSCI yang Aktif Berjalan
 
-Berikut yang terjadi di balik layar saat ada satu server yang mulai "masuk angin":
+Berikut adalah komponen nyata yang terpasang dan aktif di lingkungan Kubernetes:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  Layer 6: LAPORAN JELAS / XAI (Penjelasan logika alasan AI ke manusia) │
+├────────────────────────────────────────────────────────────────────────┤
+│  Layer 5: TANGAN EKSEKUTOR (Kubernetes API + Sandbox Guardrail)        │
+├────────────────────────────────────────────────────────────────────────┤
+│  Layer 4: OTAK SRE PINTAR (Claude Opus 4.6 Thinking / Gemini 3.8 Flash)│
+├────────────────────────────────────────────────────────────────────────┤
+│  Layer 3: BUKU SOP & TRIASE (ChromaDB Vector RAG + Urgency Score 0-100)│
+├────────────────────────────────────────────────────────────────────────┤
+│  Layer 2: DETEKTIF TOPO-GRAF (GNN DualHeadGATv2: Cari Biang Kerok)     │
+├────────────────────────────────────────────────────────────────────────┤
+│  Layer 1: SENSOR PEMANTAU (Prometheus NodePort + Pandas Metric Engine) │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Tabel Penjelasan Gampang Setiap Komponen Aktif:
+
+| Komponen | Nama Keren | Bahasa Gampangnya | Tugas Nyatanya |
+|:---|:---|:---|:---|
+| **Monitoring** | `PandasMetricProcessor` | Alat Tensimeter | Mengukur CPU, RAM bocor, latensi P99, dan error rate setiap 5 detik via **Prometheus**. |
+| **GNN Topologi** | `DualHeadGATv2` | Detektif Silsilah | Memetakan 11 microservice dan 25 jalur komunikasi untuk menemukan **biang kerok asli** dalam waktu **3,89 milidetik**! |
+| **Scoring Engine** | `DeterministicScoring` | Triase Gawat Darurat | Menghitung tingkat keparahan (0–100) secara eksak transparan agar AI tidak panik saat kondisi masih aman. |
+| **RAG Runbook** | `ChromaDB + MiniLM` | Buku SOP Rumah Sakit | Mengambil artikel penanganan insiden resmi yang tersimpan di database vektor. |
+| **AI Decision** | `XFSCIDecisionAgent` | Dokter Spesialis Senior | **Tier 1:** Claude Opus 4.6 (Thinking) & Gemini 3.8 Flash.<br>**Tier 2:** Kotak P3K Aturan Baku (*Safety Net*) jika internet putus. |
+| **Safe Sandbox** | `DryRunSandbox` | Ruang Latihan Bedah | Menguji dan mengeksekusi perintah perbaikan (`restart`, `scale_out`) dengan fitur pembatalan otomatis (*auto-rollback*). |
+
+---
+
+## 5. ⚡ Alur Kerja 7-Tahap Saat Terjadi Masalah
+
+Berikut yang terjadi di balik layar saat ada satu pod yang mulai bermasalah:
 
 ```mermaid
 graph TD
-    A[🚨 Ada Masalah di Server!] --> S1[Tahap 1: Tarik Data Metrik CPU/RAM]
-    S1 --> S2[Tahap 2: Detektif GNN Cari Siapa Biang Keroknya]
-    S2 --> S3[Tahap 3: Hitung Skor Kegawatan 0-100]
-    S3 --> S4[Tahap 4: Buka Buku Panduan SOP yang Cocok]
+    A[🚨 Ada Masalah di Server!] --> S1[Tahap 1: Tarik Data Metrik CPU/RAM via Pandas]
+    S1 --> S2[Tahap 2: Detektif GNN Cari Siapa Biang Keroknya - 3.89ms]
+    S2 --> S3[Tahap 3: Hitung Skor Kegawatan Triase 0-100]
+    S3 --> S4[Tahap 4: Buka Buku Panduan SOP yang Cocok via RAG]
     S4 --> S5[Tahap 5: Intip Pengalaman Sukses Masa Lalu]
-    S5 --> S6[Tahap 6: Dokter AI Claude / Gemini Bikin Resep]
+    S5 --> S6[Tahap 6: Dokter AI Claude / Gemini Bikin Keputusan]
     
-    subgraph "Sistem Pengambilan Keputusan (2-Tier)"
+    subgraph "Sistem Pengambilan Keputusan 2-Tier"
         S6 --> T1[Tier 1: Claude Opus 4.6 Thinking]
         T1 -- Jika Terlalu Lama/Limit --> T2[Fallback: Gemini 3.8 Flash]
-        T2 -- Jika Internet Putus --> T3[Tier 2: Kotak P3K Aturan Baku]
+        T2 -- Jika Internet Putus --> T3[Tier 2: Kotak P3K Aturan Baku Deterministik]
     end
 
-    T1 --> S7[Tahap 7: Eksekusi Perbaikan di Sandbox]
+    T1 --> S7[Tahap 7: Eksekusi Perbaikan di Sandbox Kubernetes]
     T2 --> S7
     T3 --> S7
     
     S7 --> Cek{Cek: Apakah Server Sudah Sembuh?}
     Cek -- Sembuh Total --> OK([🎉 Selesai! Simpan Pengalaman])
-    Cek -- Malah Tambah Parah --> Rollback([🔄 Batalkan Tindakan & Pulihkan Semula])
+    Cek -- Malah Tambah Parah --> Rollback([🔄 Auto-Rollback: Kembalikan ke Semula])
 ```
-
-### Cerita Detail di Setiap Tahap:
-
-1. **Tahap 1 - Cek Kesehatan (Pandas):** 
-   Program menarik data langsung dari Prometheus. Menghitung: *"Apakah RAM pod ini bocor makin gendut setiap menit? Apakah erornya melonjak?"*
-2. **Tahap 2 - Investigasi Biang Kerok (GNN):** 
-   Seringkali yang menjerit minta tolong adalah `frontend`. Tapi kecerdasan graf (GNN) menelusuri rantai jaringan dan menemukan: *"Oh, yang bikin macet ternyata `redis-cart` di belakang!"*.
-3. **Tahap 3 - Tentukan Tingkat Kegawatan (Urgency Score):** 
-   Sistem menghitung angka 0 sampai 100. Kalau angkanya rendah (misal 26/100), AI tidak akan panik mematikan server sembarangan.
-4. **Tahap 4 - Buka Buku Resep (RAG SOP):** 
-   Database vektor ChromaDB langsung menyodorkan artikel SOP penanganan microservice yang relevan.
-5. **Tahap 5 - Mengingat Masa Lalu (Experience Memory):** 
-   AI mengingat: *"Kemarin saat kasusnya mirip seperti ini, pod di-restart langsung sembuh"*.
-6. **Tahap 6 - Keputusan Ahli (AI Agent):** 
-   Claude Opus 4.6 menganalisis semua data tadi lalu membuat keputusan dalam format data yang rapi dan terukur.
-7. **Tahap 7 - Eksekusi dengan Sabuk Pengaman (Sandboxing):** 
-   Tindakan dijalankan secara aman. Jika setelah dieksekusi server ternyata belum pulih, sistem otomatis melakukan *Rollback* (mengembalikan ke kondisi semula).
 
 ---
 
-## 5. 🔬 Hasil Uji Nyata di Server (Live VM Ubuntu)
+## 6. 🔬 Hasil Uji Nyata di Server (Live VM Ubuntu)
 
-Semua komponen ini **bukan sekadar teori**, tetapi sudah diuji langsung di server virtual Linux (Ubuntu 22.04 dengan Kubernetes Kind):
+Semua komponen di atas **bukan sekadar konsep teori**, melainkan telah diuji langsung di server virtual Linux (Ubuntu 22.04 LTS):
 
 ### 1. Uji Nyali Dokter AI (Claude Opus & Gemini)
 Koneksi ke otak AI Antigravity diuji langsung melalui terminal server:
 - **Claude Opus 4.6 (Thinking):** Berhasil merespons cepat (`OK`).
 - **Gemini 3.8 Flash (High):** Berhasil merespons cepat (`OK`).
-- **Mode Tanpa Hambatan:** Ditambahkan bendera `--dangerously-skip-permissions` agar proses otomatisasi tidak macet karena menunggu klik tombol dari manusia.
+- **Mode Headless Tanpa Hambatan:** Menggunakan flag `--dangerously-skip-permissions` agar proses otomatisasi tidak macet karena menunggu izin klik dari manusia.
 
 ### 2. Kecepatan Kilat Model GNN
 - Model topologi mendeteksi 11 microservice dan 25 jalur komunikasi hanya dalam waktu **3,89 milidetik**!
@@ -157,7 +154,7 @@ Koneksi ke otak AI Antigravity diuji langsung melalui terminal server:
 
 ---
 
-## 6. 📁 Peta Folder Project (Biar Tidak Bingung)
+## 7. 📁 Peta Folder Project (Biar Tidak Bingung)
 
 ```text
 xfsci/
@@ -180,7 +177,7 @@ xfsci/
 
 ---
 
-## 7. 🚀 Cara Praktis Menjalankannya di Terminal
+## 8. 🚀 Cara Praktis Menjalankannya di Terminal
 
 Jika ingin mendemonstrasikan ke dosen atau rekan tim di terminal server:
 
@@ -205,8 +202,9 @@ python3 -m agent.orchestrator -d cartservice --dry-run
 
 ---
 
-## 8. 🎯 Kesimpulan Utama
+## 9. 🎯 Kesimpulan Akhir
 
-1. **Bukan AI Halu:** Keputusan perbaikan selalu didasarkan pada data metrik fisik nyata (Pandas) dan peta graf topologi (GNN).
-2. **Tidak Pernah Macet:** Memiliki sistem 2 lapis. Jika AI awan lambat, sistem darurat aturan baku (*safety net*) otomatis melindungi klaster.
-3. **Aman untuk Bisnis:** Tindakan perbaikan tidak gegabah karena ada fitur verifikasi dan *auto-rollback* jika perbaikan tidak membuahkan hasil.
+1. **Alur Real-Time Bersih & Cepat:** Alur penanganan insiden 100% berfokus pada kecepatan detik (Prometheus $\rightarrow$ GNN $\rightarrow$ Scoring $\rightarrow$ RAG $\rightarrow$ AI SRE Agent $\rightarrow$ K8s Sandbox).
+2. **Federated Learning Bukan untuk Darurat:** FL adalah proses pelatihan offline berkala antar-kluster data center, bukan eksekutor saat terjadi insiden.
+3. **Bukan AI Halu:** Keputusan perbaikan selalu didasarkan pada data metrik fisik nyata (Pandas) dan peta graf topologi (GNN).
+4. **Tidak Pernah Macet:** Memiliki sistem 2 lapis (*Two-Tier*). Jika AI awan lambat, sistem darurat aturan baku (*safety net*) otomatis melindungi klaster tanpa downtime.

@@ -112,9 +112,9 @@ class DeterministicScoringEngine:
         else:
             breakdown["latency"] = 0
         
-        # --- Komponen 6: Restart Count (max 5 poin) ---
+        # --- Komponen 6: Restart Count (max 20 poin) ---
         rst_threshold = self.urgency_config.get("restart_count_threshold", 3)
-        rst_score = self.urgency_config.get("restart_score", 5)
+        rst_score = self.urgency_config.get("restart_score", 20)
         if pandas_metrics.pod_restarts_1h >= rst_threshold:
             score += rst_score
             breakdown["restarts"] = rst_score
@@ -138,12 +138,12 @@ class DeterministicScoringEngine:
         Thresholds dari config.yaml:
           < 30  = LOW
           30-50 = MEDIUM
-          50-70 = HIGH
-          > 85  = CRITICAL
+          50-75 = HIGH
+          >= 75 = CRITICAL
         """
-        critical = self.levels_config.get("critical", 85)
-        high = self.levels_config.get("high", 70)
-        medium = self.levels_config.get("medium", 50)
+        critical = self.levels_config.get("critical", 75)
+        high = self.levels_config.get("high", 50)
+        medium = self.levels_config.get("medium", 30)
         
         if score >= critical:
             return UrgencyLevel.CRITICAL

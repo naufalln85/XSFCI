@@ -482,6 +482,17 @@ RAG Similarity: {situation.rag_similarity_score:.2f}
         
         logger.info(f"Rule-based decision | Urgency: {urgency.value}")
         
+        # Override: Jika pod crash berulang, JANGAN no_op meskipun urgency LOW
+        if metrics.pod_restarts_1h >= 3:
+            return ActionDecision(
+                action=ActionType.SCALE_OUT,
+                target_deployment=metrics.target_pod,
+                parameters=ActionParameters(replicas_to_add=2),
+                confidence=0.85,
+                reasoning=f"Pod crash {metrics.pod_restarts_1h}x dalam 1 jam. Scale out untuk jaga availability.",
+                data_sources_used=["rule_based_engine", "crash_loop_override"]
+            )
+        
         # LOW urgency → No-op
         if urgency == UrgencyLevel.LOW:
             return ActionDecision(

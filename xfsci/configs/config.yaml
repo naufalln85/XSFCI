@@ -216,14 +216,14 @@ scoring:
     latency_p99_threshold_ms: 500     # > 500ms = lambat
     latency_score: 10
     restart_count_threshold: 3        # > 3 restart/jam = crash loop
-    restart_score: 5
+    restart_score: 20                 # Pod crash = sinyal darurat, bukan 5 poin
 
   # Urgency Level thresholds
   levels:
     low: 30                       # < 30 = LOW (no_op)
-    medium: 50                    # 30-50 = MEDIUM (monitor)
-    high: 70                      # 50-70 = HIGH (act)
-    critical: 85                  # > 85 = CRITICAL (immediate action)
+    medium: 30                    # Skor >= 30 = MEDIUM (bukan 50)
+    high: 50                      # Skor >= 50 = HIGH (bukan 70)
+    critical: 75                  # Skor >= 75 = CRITICAL (bukan 85)
 
   # Post-Action Score weights
   post_action:

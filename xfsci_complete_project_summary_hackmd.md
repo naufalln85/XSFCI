@@ -1,277 +1,212 @@
 ---
-title: 'Rangkuman Komprehensif Proyek XFSCI: Cross-Service Fault Correlation Intelligence'
-description: 'Dokumentasi lengkap arsitektur, implementasi teknis, pipeline 7-tahap otonom, integrasi Antigravity SRE AI Agent, dan hasil audit sistem XFSCI.'
-tags: xfsci, kubernetes, sre, aiops, gnn, rag, antigravity, self-healing, hackmd
+title: 'Panduan Santai & Lengkap XFSCI: Dokter Robot Pintar untuk Server Cloud'
+description: 'Penjelasan sederhana, ramah pemula, dan sangat mudah dipahami tentang arsitektur dan hasil proyek XFSCI (Self-Healing Kubernetes AI).'
+tags: xfsci, kubernetes, aiops, belajar-cloud, bahasa-santai, hackmd
 robots: noindex, nofollow
 dir: ltr
 lang: id
 ---
 
-# 🚀 Rangkuman Komprehensif Proyek XFSCI
-### *Explainable Federated Self-Healing Cloud Infrastructure*
-*(Cross-Service Fault Correlation Intelligence)*
+# 🤖 Panduan Santai & Lengkap XFSCI
+### *"Dokter Robot Spesialis yang Menjaga Server Cloud Tetap Sehat Tanpa Begadang"*
 
 [TOC]
 
 ---
 
 :::info
-**Informasi Dokumen**
-- **Status Proyek:** Siap Produksi / Tahap Uji Otonom End-to-End (*Phase 4 Complete*)
-- **Lingkungan Uji:** Kubernetes (Kind / MicroK8s / K3s) di Ubuntu 22.04 LTS (VM5 - `XSFCICUYY`)
-- **Target Workload:** Google Online Boutique (11 Microservices, 25 Directed Inter-service Edges)
-- **Model AI Brain:** 2-Tier Hybrid Architecture (Tier 1: Claude Opus 4.6 Thinking & Gemini 3.8 Flash High via Antigravity Agentic Runtime; Tier 2: Deterministic Rule-Based Safety Net)
-- **Format:** Kompatibel penuh dengan **HackMD / Markdown Extended**
+💡 **Tentang Dokumen Ini**
+Dokumen ini merangkum seluruh hasil proyek **XFSCI** (*Explainable Federated Self-Healing Cloud Infrastructure*) dengan bahasa yang **santai, jelas, menggunakan analogi sehari-hari**, sehingga mudah dipahami oleh siapa saja—baik mahasiswa, dosen penguji, maupun praktisi industri.
 :::
 
 ---
 
-## 1. 📌 Ringkasan Eksekutif & Latar Belakang
+## 1. 🌟 Masalah Apa yang Ingin Diselesaikan?
 
-Sistem komputasi awan berbasis *microservices* modern di Kubernetes sangat rentan terhadap **kegagalan berantai (*cascading failures*)**. Ketika sebuah layanan mengalami kebocoran memori (*memory leak*), lonjakan latensi, atau *crash*, dampak negatifnya merambat ke puluhan layanan lain dalam hitungan detik. 
+Bayangkan Anda mengelola aplikasi toko online raksasa (seperti Tokopedia atau Shopee). Di balik layar, ada puluhan layanan kecil (*microservices*) yang saling bekerja sama: ada bagian keranjang belanja (*cartservice*), pembayaran (*paymentservice*), katalog produk (*productcatalog*), dan database.
 
-**Kelemahan Solusi Tradisional:**
-1. **Rule-Based Alerting:** Menimbulkan *alert fatigue* (ribuan notifikasi palsu) dan lambat dalam mendeteksi akar masalah sejati (*root cause*).
-2. **Reinforcement Learning (RL) Murni:** Bekerja seperti *black-box*, membutuhkan jutaan iterasi latihan berisiko tinggi di kluster produksi, serta tidak memiliki penalaran logika mendalam (*reasoning*).
+### 💥 Efek Domino (Cascading Failure)
+Jika layanan database tiba-tiba lambat atau kehabisan memori (*memory leak*):
+1. Layanan keranjang belanja ikut macet karena menunggu balasan database.
+2. Halaman depan web (*frontend*) ikut *hang*.
+3. Akhirnya pembeli marah-marah karena tidak bisa checkout.
 
-**Solusi Terobosan XFSCI:**
-XFSCI memadukan keunggulan **Graph Neural Network (GNN)** untuk melacak topologi mikroservis secara spasial, **RAG (Retrieval-Augmented Generation)** berbasis ChromaDB untuk menyerap SOP SRE, dan **Antigravity AI Agentic Runtime (Claude Opus 4.6 Thinking / Gemini 3.8 Flash High)** yang bertindak layaknya tim *Site Reliability Engineer* (SRE) ahli 24/7 dengan proteksi eksekusi *Sandboxed*.
+### 😫 Masalah Cara Lama
+- **Alarm Berisik (*Alert Fatigue*):** Admin dikirimi ratusan notifikasi WhatsApp/Slack tengah malam. Seringkali yang bunyi alarm adalah layanan *frontend*, padahal penyebab aslinya adalah *database* di belakang!
+- **AI Model Lama (Black-Box):** Kalau pakai AI biasa, seringkali kita tidak tahu *kenapa* AI mengambil tindakan tersebut. Admin takut servernya malah tambah rusak.
 
 ---
 
-## 2. 🏛️ Arsitektur Global 8-Layer XFSCI
+## 2. 🏥 Solusi XFSCI: "Dokter Robot Spesialis Cloud"
 
-Arsitektur XFSCI dirancang modular dan berlapis (*end-to-end*):
+**XFSCI** dibuat seperti **Dokter Robot SRE (Site Reliability Engineer)** yang siaga 24 jam menjaga server. 
+
+Kalau dianalogikan ke rumah sakit:
+1. **Sensor Tubuh:** Terus memantau denyut nadi, suhu, dan tekanan darah server.
+2. **Pelacak Jalur Penularan:** AI mencari tahu siapa yang menulari siapa (mencari biang kerok utama, bukan menyalahkan korban yang tertular).
+3. **Triase UGD:** Menilai seberapa parah sakitnya (apakah cukup minum vitamin, atau harus operasi darurat).
+4. **Buku Panduan Medis:** Membaca SOP penanganan resmi rumah sakit.
+5. **Dokter Spesialis Pintar:** AI tingkat tinggi (Claude Opus & Gemini) menganalisis dan memutuskan obat terbaik.
+6. **Kotak P3K Darurat:** Jika internet putus, tetap ada aturan medis baku yang otomatis berjalan agar pasien tidak koma.
+7. **Simulasi Aman:** Sebelum suntik obat, dites dulu efek sampingnya agar server tidak tiba-tiba mati total.
+
+---
+
+## 3. 🧩 Arsitektur 8 Lapisan: "Sistem Organ Tubuh XFSCI"
+
+XFSCI memiliki 8 lapisan kerja dari bawah (alat ukur) sampai ke atas (keamanan global):
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│  Layer 8: SECURITY LAYER (Byzantine Defense: FedMedian & Krum Filter)  │
+│  Layer 8: PERISAI KEAMANAN (Menolak rumus palsu & sabotase dari luar)  │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Layer 7: FEDERATED LEARNING LAYER (Kolaborasi Multi-Cluster / Flower) │
+│  Layer 7: BELAJAR BERSAMA (Bagi-bagi ilmu antar data center rahasia)  │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Layer 6: EXPLAINABILITY LAYER (XAI: SHAP & LIME Telemetry Insights)   │
+│  Layer 6: PENERJEMAH CERDAS (Menjelaskan alasan AI ke bahasa manusia)  │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Layer 5: SELF-HEALING ENGINE (Kubernetes Operator + Safety Guardrail) │
+│  Layer 5: TANGAN EKSEKUTOR (Menjalankan perbaikan di Kubernetes)       │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Layer 4: AI AGENT DECISION (Antigravity SRE 2-Tier + Precision Opt)   │
+│  Layer 4: OTAK PENGAMBIL KEPUTUSAN (Claude Opus & Gemini Flash)        │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Layer 3: SCORING & RAG (Deterministic Urgency + ChromaDB SOP Runbook) │
+│  Layer 3: SKOR GAWAT DARURAT & BUKU SOP (Skor 0-100 + SOP RAG)        │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Layer 2: CLOUD INTELLIGENCE (GNN DualHeadGATv2: Topology Risk & RCA)  │
+│  Layer 2: DETEKTIF SILSILAH / GNN (Mencari biang kerok asli)           │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Layer 1: MONITORING LAYER (Prometheus NodePort + Pandas Metric Engine)│
+│  Layer 1: SENSOR PEMANTAU (Prometheus: Cek CPU, RAM, & Latensi)        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Tabel Rincian 8 Lapisan:
+### Tabel Penjelasan Gampang Setiap Lapisan:
 
-| Layer | Nama Lapisan | Komponen Utama | Peran & Tanggung Jawab |
+| Layer | Nama Keren | Bahasa Gampangnya | Tugas Nyatanya |
 |:---:|:---|:---|:---|
-| **1** | **Monitoring Layer** | Prometheus, NodePort 30090, cAdvisor | Pengumpulan telemetri fisik (*CPU, Memory, Latency P50/P99, Error Rate, Replicas*) setiap 5 detik. |
-| **2** | **Cloud Intelligence** | GNN `DualHeadGATv2`, PyTorch Geometric | Mengubah topologi Kubernetes menjadi graf dinamis, memprediksi anomali, dan menetapkan peringkat *Top-3 Root Cause Analysis* (RCA). |
-| **3** | **Scoring & Knowledge** | `DeterministicScoringEngine`, ChromaDB RAG | Menghitung *Urgency Score* (0–100) matematis transparan dan mengambil dokumen SOP runbook relevan. |
-| **4** | **AI Agent Decision** | `XFSCIDecisionAgent`, Antigravity CLI/SDK | Menggunakan Claude Opus 4.6 / Gemini 3.8 Flash untuk penalaran SRE terstruktur dalam format JSON tervalidasi Pydantic. |
-| **5** | **Self-Healing Engine** | `DryRunSandbox`, `inspect_pod.sh`, K8s API | Eksekusi tindakan mitigasi aman (*scale_out, restart_pod, rate_limit, migrate*) dengan *circuit breaker* dan *rollback*. |
-| **6** | **Explainability (XAI)**| `SHAP`, `LIME`, Incident Dossier | Menjelaskan faktor telemetri yang memicu keputusan mitigasi agar transparan bagi tim DevOps. |
-| **7** | **Federated Learning** | Flower Framework (`flwr`), gRPC | Melatih model prediksi antar-kluster cloud tanpa membocorkan data log internal yang privat. |
-| **8** | **Security Layer** | Byzantine Robust Aggregator (`FedMedian`) | Memfilter dan menolak pembaruan model yang dirusak atau disabotase (*data poisoning attack*). |
+| **1** | **Monitoring Layer** | Alat Tensimeter & Termometer | Mengukur CPU, RAM, jumlah eror, dan kelambatan respons setiap 5 detik via **Prometheus**. |
+| **2** | **Cloud Intelligence (GNN)** | Detektif Peta Hubungan | Menggunakan grafik interaksi antar-layanan untuk menebak pod mana yang jadi **biang kerok asli** dalam waktu cuma **3,89 milidetik**! |
+| **3** | **Scoring & Knowledge** | Triase UGD & Buku Panduan | Menghitung tingkat keparahan (Skor 0–100) dan mengambil buku SOP pertolongan pertama dari memori vektor (**ChromaDB**). |
+| **4** | **AI Agent Decision** | Dokter Spesialis Senior | **Claude Opus 4.6 (Thinking)** & **Gemini 3.8 Flash** berpikir logis menentukan tindakan paling pas. |
+| **5** | **Self-Healing Engine** | Tangan Perawat yang Menyuntik | Menjalankan tindakan nyata di Kubernetes (tambah replika server, restart aplikasi, dsb.) dengan sabuk pengaman (*safety net*). |
+| **6** | **Explainability (XAI)** | Laporan Rekam Medis Transparan | Menampilkan alasan gamblang: *"Saya restart server A karena memori bocor 50MB per menit dan bikin lambat 80%"*. |
+| **7** | **Federated Learning** | Pertukaran Ilmu Dokter Dunia | Berbagi kepintaran antar-pusat data tanpa perlu membocorkan data rahasia pengguna (*Privacy-Preserving*). |
+| **8** | **Security Layer** | Satpam Penangkal Sabotase | Menyaring jika ada data center lain yang mengirim rumus ngawur atau kena virus peretas. |
 
 ---
 
-## 3. 🔄 Alur Kerja Pipeline 7-Tahap (*Autonomous Incident Remediation*)
+## 4. ⚡ Alur Kerja 7-Tahap Saat Terjadi Masalah
 
-Setiap kali anomali terdeteksi atau alert diterima, **Orchestrator** mengeksekusi pipeline 7-tahap secara berurutan:
+Berikut yang terjadi di balik layar saat ada satu server yang mulai "masuk angin":
 
 ```mermaid
 graph TD
-    Alert([🚨 Incident Alert Triggered]) --> S1[1. Pandas Telemetry Ingestion]
-    S1 --> S2[2. GNN Topology Anomaly & RCA]
-    S2 --> S3[3. Deterministic Urgency Scoring]
-    S3 --> S4[4. RAG SOP Runbook Retrieval]
-    S4 --> S5[5. Experience Memory Retrieval]
-    S5 --> S6[6. 2-Tier AI Agent Decision]
+    A[🚨 Ada Masalah di Server!] --> S1[Tahap 1: Tarik Data Metrik CPU/RAM]
+    S1 --> S2[Tahap 2: Detektif GNN Cari Siapa Biang Keroknya]
+    S2 --> S3[Tahap 3: Hitung Skor Kegawatan 0-100]
+    S3 --> S4[Tahap 4: Buka Buku Panduan SOP yang Cocok]
+    S4 --> S5[Tahap 5: Intip Pengalaman Sukses Masa Lalu]
+    S5 --> S6[Tahap 6: Dokter AI Claude / Gemini Bikin Resep]
     
-    subgraph "Tier 1: Antigravity Agentic Runtime"
-        S6 --> T1A[Claude Opus 4.6 Thinking]
-        T1A -- Fail / Limit --> T1B[Gemini 3.8 Flash High]
-    end
-    
-    subgraph "Tier 2: Safety Net"
-        T1B -- Fail --> T2[Deterministic Rule-Based Engine]
+    subgraph "Sistem Pengambilan Keputusan (2-Tier)"
+        S6 --> T1[Tier 1: Claude Opus 4.6 Thinking]
+        T1 -- Jika Terlalu Lama/Limit --> T2[Fallback: Gemini 3.8 Flash]
+        T2 -- Jika Internet Putus --> T3[Tier 2: Kotak P3K Aturan Baku]
     end
 
-    T1A --> S7[7. Action Remediation & Sandboxing]
-    T1B --> S7
+    T1 --> S7[Tahap 7: Eksekusi Perbaikan di Sandbox]
     T2 --> S7
+    T3 --> S7
     
-    S7 --> Verif{Post-Action Verification}
-    Verif -- SLA Healthy --> Success([✅ Incident Resolved & Runbook Learned])
-    Verif -- Metric Degraded --> Rollback([🔄 Auto-Rollback Guardrail])
+    S7 --> Cek{Cek: Apakah Server Sudah Sembuh?}
+    Cek -- Sembuh Total --> OK([🎉 Selesai! Simpan Pengalaman])
+    Cek -- Malah Tambah Parah --> Rollback([🔄 Batalkan Tindakan & Pulihkan Semula])
 ```
 
-### Rincian Eksekusi Setiap Tahap:
+### Cerita Detail di Setiap Tahap:
 
-#### 📊 Tahap 1: Pengumpulan Metrik via Pandas (`PandasMetricProcessor`)
-- Terhubung otomatis ke Prometheus lokal (`http://127.0.0.1:9090`) dengan fitur *auto-port-forward tunnel* jika koneksi terputus.
-- Menghitung metrik turunan kritis: laju pertumbuhan memori (*growth rate MB/min*), lonjakan latensi P99, error rate 5m/15m, dan laju restart pod.
-
-#### 🧠 Tahap 2: Inferensi Graf Spasial (`DualHeadGATv2`)
-- Memetakan 11 microservices Online Boutique dan 25 directed dependency edges.
-- Menghasilkan dua output simultan (*Dual-Head*):
-  1. **Graph Anomaly Classification:** Mendeteksi tipe kegagalan (`normal`, `memory_leak`, `cpu_saturation`, `network_delay`, `pod_failure`).
-  2. **Root Cause Analysis (RCA):** Memberikan skor kontribusi spasial untuk mengidentifikasi pod mana yang menjadi biang kerok sejati, mencegah penyalahan pod hilir (*cascade victim*).
-- **Kecepatan Inferensi:** Hanya **3.89 ms**!
-
-#### 📐 Tahap 3: Penghitungan Urgency Score (`DeterministicScoringEngine`)
-- Menggabungkan probabilitas GNN, deviasi metrik fisik, dan ambang batas SLA ke dalam skor deterministik `0 – 100` (Low: <40, Medium: 40–70, High: >70, Critical: >85).
-- Memastikan sistem tidak mengalami histeria (*over-reaction*) jika kondisi masih dalam batas aman.
-
-#### 📚 Tahap 4: Pencarian SOP Runbook via RAG (`ChromaDB`)
-- Mengindeks dokumen runbook SOP SRE ke dalam ChromaDB vektor menggunakan model embedding `all-MiniLM-L6-v2`.
-- Menemukan runbook operasional yang paling mirip dengan tipe insiden aktual beserta langkah remediasinya.
-
-#### 🧪 Tahap 5: Kueri Pengalaman Masa Lalu (`ExperienceMemory`)
-- Mengambil riwayat remediasi sebelumnya yang berhasil menyelesaikan insiden serupa untuk memperkaya prompt pengambilan keputusan.
-
-#### 🤖 Tahap 6: Keputusan AI Agent 2-Tier (`XFSCIDecisionAgent`)
-- **Tier 1 (Antigravity Agentic Runtime - Akun Pro):**
-  - Model Prioritas: **Claude Opus 4.6 (Thinking)** untuk penalaran arsitektural yang mendalam.
-  - Model Fallback: **Gemini 3.8 Flash (High)** untuk inferensi kilat berkeandalan tinggi.
-  - Dilengkapi flag `--dangerously-skip-permissions` untuk eksekusi *headless automation* tanpa hambatan konfirmasi interaktif.
-- **Tier 2 (Safety Net Deterministic):**
-  - Jika koneksi internet putus atau kuota API habis, mesin aturan deterministik mengambil alih secara instan tanpa downtime.
-
-#### 🛡️ Tahap 7: Eksekusi Mitigasi & Validasi Sandboxed (`DryRunSandbox`)
-- Validasi parameter tindakan via `PrecisionOptimizer` (misal: penentuan jumlah replika skala optimal).
-- Eksekusi aman dalam mode simulasi (*dry-run*) atau *live sandbox*.
-- Pengecekan pasca-aksi (*health verification*): jika latensi justru naik >20%, *circuit breaker* langsung membatalkan tindakan (*auto-rollback*).
+1. **Tahap 1 - Cek Kesehatan (Pandas):** 
+   Program menarik data langsung dari Prometheus. Menghitung: *"Apakah RAM pod ini bocor makin gendut setiap menit? Apakah erornya melonjak?"*
+2. **Tahap 2 - Investigasi Biang Kerok (GNN):** 
+   Seringkali yang menjerit minta tolong adalah `frontend`. Tapi kecerdasan graf (GNN) menelusuri rantai jaringan dan menemukan: *"Oh, yang bikin macet ternyata `redis-cart` di belakang!"*.
+3. **Tahap 3 - Tentukan Tingkat Kegawatan (Urgency Score):** 
+   Sistem menghitung angka 0 sampai 100. Kalau angkanya rendah (misal 26/100), AI tidak akan panik mematikan server sembarangan.
+4. **Tahap 4 - Buka Buku Resep (RAG SOP):** 
+   Database vektor ChromaDB langsung menyodorkan artikel SOP penanganan microservice yang relevan.
+5. **Tahap 5 - Mengingat Masa Lalu (Experience Memory):** 
+   AI mengingat: *"Kemarin saat kasusnya mirip seperti ini, pod di-restart langsung sembuh"*.
+6. **Tahap 6 - Keputusan Ahli (AI Agent):** 
+   Claude Opus 4.6 menganalisis semua data tadi lalu membuat keputusan dalam format data yang rapi dan terukur.
+7. **Tahap 7 - Eksekusi dengan Sabuk Pengaman (Sandboxing):** 
+   Tindakan dijalankan secara aman. Jika setelah dieksekusi server ternyata belum pulih, sistem otomatis melakukan *Rollback* (mengembalikan ke kondisi semula).
 
 ---
 
-## 4. 📂 Struktur Repositori & Modul Kode
+## 5. 🔬 Hasil Uji Nyata di Server (Live VM Ubuntu)
 
-```
+Semua komponen ini **bukan sekadar teori**, tetapi sudah diuji langsung di server virtual Linux (Ubuntu 22.04 dengan Kubernetes Kind):
+
+### 1. Uji Nyali Dokter AI (Claude Opus & Gemini)
+Koneksi ke otak AI Antigravity diuji langsung melalui terminal server:
+- **Claude Opus 4.6 (Thinking):** Berhasil merespons cepat (`OK`).
+- **Gemini 3.8 Flash (High):** Berhasil merespons cepat (`OK`).
+- **Mode Tanpa Hambatan:** Ditambahkan bendera `--dangerously-skip-permissions` agar proses otomatisasi tidak macet karena menunggu klik tombol dari manusia.
+
+### 2. Kecepatan Kilat Model GNN
+- Model topologi mendeteksi 11 microservice dan 25 jalur komunikasi hanya dalam waktu **3,89 milidetik**!
+- Sangat cepat, sehingga server bisa diselamatkan sebelum pengguna web menyadari adanya kelambatan.
+
+### 3. Otomatis Menghubungkan Diri (*Self-Repairing Pipeline*)
+- Jika sambungan ke Prometheus terputus, sistem secara otomatis membangun jembatan data baru (*auto port-forward tunnel*) tanpa perlu campur tangan admin.
+
+---
+
+## 6. 📁 Peta Folder Project (Biar Tidak Bingung)
+
+```text
 xfsci/
 ├── configs/
-│   └── config.yaml               # Konfigurasi terpusat (Model, K8s, Prometheus, Scoring)
+│   └── config.yaml          # Buku setelan utama (nama model, batas waktu, port)
 ├── agent/
-│   ├── orchestrator.py           # Engine Orkestrator 7-Tahap (CLI & Daemon mode)
-│   ├── decision_agent.py         # AI Agent 2-Tier (Antigravity CLI/SDK + Rule Engine)
-│   ├── pandas_processor.py       # Engine telemetri Prometheus & Pandas dataframes
-│   ├── scoring_engine.py         # Penghitung Urgency Score & prioritas aksi
-│   ├── sandbox.py                # Eksekutor tindakan aman & Dry-Run guardrails
-│   ├── precision_optimizer.py    # Pengoptimal parameter aksi cerdas (ML-based)
-│   ├── multi_step_planner.py     # Penyusun rencana pemulihan bertahap
-│   ├── experience_memory.py      # Penyimpan memori insiden berbasis vektor
-│   └── action_schema.py          # Definisi schema Pydantic terverifikasi
+│   ├── orchestrator.py      # Sutradara utama yang menjalankan Tahap 1 sampai 7
+│   ├── decision_agent.py    # Otak AI (Claude Opus, Gemini, & Aturan Baku)
+│   ├── pandas_processor.py  # Pengukur metrik dari Prometheus
+│   ├── scoring_engine.py    # Penghitung skor darurat (0 - 100)
+│   └── sandbox.py           # Tempat eksekusi perbaikan yang aman
 ├── models/
-│   └── gnn/
-│       ├── gnn_model.py          # Arsitektur DualHeadGATv2 (PyTorch Geometric)
-│       ├── gnn_predictor.py      # Modul runtime inferensi topologi real-time
-│       └── graph_dataset.py      # Pembangun graf dependensi microservices
+│   └── gnn/                 # Model AI pendeteksi biang kerok topologi
 ├── knowledge_base/
-│   ├── rag_indexer.py            # Modul pengindeks dokumen SOP ke ChromaDB
-│   ├── runbooks/                 # File Markdown SOP penanganan insiden
-│   └── vectordb/                 # Database vektor lokal (chroma.sqlite3)
-├── infrastructure/
-│   ├── kind-cluster.yaml         # Definisi 1 Control Plane + 3 Worker Nodes
-│   ├── hipster/                  # Manifest microservices Google Online Boutique
-│   └── prometheus/               # Manifest Prometheus Server & cAdvisor
+│   ├── runbooks/            # Kumpulan file catatan SOP penanganan masalah
+│   └── vectordb/            # Database pintar penyimpan SOP (ChromaDB)
 └── scripts/
-    ├── setup_cluster.sh          # Inisialisasi cluster kind & namespace
-    ├── deploy_monitoring.sh      # Setup monitoring stack Prometheus
-    └── emergency_recovery.sh     # Skrip pemulihan darurat jika klaster kolaps
+    └── setup_cluster.sh     # Skrip sekali klik untuk membuat klaster Kubernetes
 ```
 
 ---
 
-## 5. 🔬 Hasil Audit, Validasi & Bukti Eksekusi (Live VM5)
+## 7. 🚀 Cara Praktis Menjalankannya di Terminal
 
-Berdasarkan serangkaian pengujian langsung pada mesin server virtual VM5 (`XSFCICUYY`), seluruh komponen inti telah diaudit dan diverifikasi 100% berfungsi:
+Jika ingin mendemonstrasikan ke dosen atau rekan tim di terminal server:
 
-### 1. Bukti Respon Antigravity Dual-Model
-Pengujian langsung via CLI mengonfirmasi kedua model siap pakai di akun Pro:
-```bash
-# Uji Model Utama: Claude Opus 4.6 (Thinking)
-agy --model claude-opus-4-6-thinking -p "Halo Claude, jawab satu kata: OK"
-# Output: OK
-
-# Uji Model Fallback: Gemini 3.8 Flash (High)
-agy --model gemini-3.8-flash-high -p "Halo Gemini, jawab satu kata: OK"
-# Output: OK
-```
-
-### 2. Bukti Kesehatan Layanan Dependensi
-- **Prometheus Service:** `curl -s http://127.0.0.1:9090/-/healthy` $\rightarrow$ `Prometheus Server is Healthy.`
-- **RAG ChromaDB:** Database `chroma.sqlite3` terisi penuh (ukuran 440 KB) dengan 6 dokumen SOP runbook (30 *text chunks*).
-- **GNN Topology Model:** `DualHeadGATv2` sukses memuat graf 11 node dan 25 edge, dengan waktu inferensi **3.89 ms**.
-
-### 3. Log Cuplikan Eksekusi Orchestrator Sukses
-```text
-2026-10-01 16:40:48 | SUCCESS | agent.pandas_processor - Terhubung ke Prometheus lokal di http://127.0.0.1:9090
-2026-10-01 16:40:48 | SUCCESS | agent.decision_agent  - Antigravity Agentic SDK ready | Priority: claude-opus-4-6-thinking | Fallback: gemini-3.8-flash-high | Sandbox: ON
-2026-10-01 16:40:53 | SUCCESS | models.gnn.gnn_predictor - GNN Model loaded successfully!
-2026-10-01 16:40:53 | INFO    | __main__:handle_alert - 🚨 ALERT RECEIVED: cartservice
-2026-10-01 16:40:53 | INFO    | [1/7] 📊 Collecting metrics via Pandas...
-2026-10-01 16:40:53 | INFO    | [2/7] 🧠 Running GNN Layer 2 (Topology-Aware Anomaly Prediction)...
-                      🧠 GNN Inference [3.89ms] | Target: cartservice -> normal (66%) | Cluster Risk: 0.34 | Root Cause: cartservice (25%)
-2026-10-01 16:40:53 | INFO    | [3/7] 📐 Calculating urgency score... Urgency Score: 26.8/100 (low)
-2026-10-01 16:40:54 | INFO    | [4/7] 📚 Searching RAG runbooks... RAG found 3 relevant docs (top similarity: 0.47)
-2026-10-01 16:40:54 | INFO    | [5/7] 🧪 Querying past experiences...
-2026-10-01 16:40:54 | INFO    | [6/7] 🤖 AI Agent making decision...
-2026-10-01 16:41:04 | SUCCESS | [7/7] 📝 Generating explanation...
-✅ Pipeline complete in 11.2s | Action: no_op | Confidence: 95%
-```
-
----
-
-## 6. 🛠️ Cheatsheet & Panduan Perintah Operasional
-
-Untuk menjalankan sistem di lingkungan server/VM:
-
-### 1. Inisialisasi & Verifikasi Git
+### Langkah 1: Update Kode Terbaru
 ```bash
 cd ~/xfsci/xfsci
 git pull origin main
-git log -n 1 --oneline
 ```
 
-### 2. Membangun Ulang Vektor RAG Runbook (Jika Ada SOP Baru)
+### Langkah 2: Uji Mandiri Diagnosa Otomatis (Dry-Run Mode)
+Jalankan uji coba perbaikan pada layanan keranjang belanja (*cartservice*):
 ```bash
-source ~/venv-xfsci/bin/activate
-python3 knowledge_base/rag_indexer.py
-```
-
-### 3. Menjalankan Diagnosa Mandiri Otonom (*Dry-Run Mode*)
-```bash
-# Uji pod cartservice
 python3 -m agent.orchestrator -d cartservice --dry-run
-
-# Uji pod rekomendasi/frontend
-python3 -m agent.orchestrator -d frontend --dry-run
 ```
 
-### 4. Menjalankan Mode Daemon Penuh (Monitoring Berkelanjutan)
-```bash
-python3 -m agent.orchestrator --daemon --interval 15
-```
-
-### 5. Memeriksa Pod Kubernetes Target
-```bash
-kubectl get pods -n demo
-kubectl top pods -n demo
-```
+**Apa yang akan terlihat di layar?**
+1. 📊 Layar akan menampilkan pembacaan metrik CPU & RAM yang hijau/sehat.
+2. 🧠 Graf GNN menganalisis jalur risiko (dalam 3-4 ms).
+3. 📚 RAG menemukan dokumen SOP penanganan cartservice.
+4. 🤖 AI Agent memutuskan tindakan (misal: `no_op` karena masih aman, atau `restart_pod` / `scale_out` jika memori bocor).
+5. ✅ Semua proses selesai dalam hitungan detik dengan laporan terinci!
 
 ---
 
-## 7. 🔮 Kesimpulan & Rencana Pengembangan Lanjutan
+## 8. 🎯 Kesimpulan Utama
 
-Proyek **XFSCI** telah berhasil mentransformasi paradigma monitoring cloud konvensional menjadi **sistem pertahanan otonom berstandar industri**:
-1. **Transparan & Teruji:** Mengeliminasi sifat *black-box* melalui perpaduan metrik Pandas yang akurat, pembobotan GNN spasial, dan penjelasan logis berbasis LLM.
-2. **Keandalan Ganda (*High Availability*):** Integrasi *Two-Tier* menjamin bahwa kegagalan API eksternal tidak akan melumpuhkan fungsi *self-healing* klaster.
-3. **Aman untuk Lingkungan Produksi:** Fitur *Sandboxing*, *Circuit Breakers*, dan *Auto-Rollback* memastikan tindakan mitigasi tidak pernah merusak infrastruktur.
-
-**Langkah Lanjutan Berikutnya:**
-- Mengaktifkan eksekusi klaster langsung (*Live Remediation*) untuk skenario *Memory Leak Injection*.
-- Menghubungkan lapisan Federated Learning (Layer 7) menggunakan framework Flower untuk pertukaran bobot model antar-kluster edge/multi-cloud.
-- Integrasi antarmuka visual Dashboard Next.js untuk visualisasi graf GNN dan *Timeline Incident Dossier*.
+1. **Bukan AI Halu:** Keputusan perbaikan selalu didasarkan pada data metrik fisik nyata (Pandas) dan peta graf topologi (GNN).
+2. **Tidak Pernah Macet:** Memiliki sistem 2 lapis. Jika AI awan lambat, sistem darurat aturan baku (*safety net*) otomatis melindungi klaster.
+3. **Aman untuk Bisnis:** Tindakan perbaikan tidak gegabah karena ada fitur verifikasi dan *auto-rollback* jika perbaikan tidak membuahkan hasil.

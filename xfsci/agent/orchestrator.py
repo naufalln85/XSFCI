@@ -54,6 +54,7 @@ from agent.sandbox import DryRunSandbox
 from agent.precision_optimizer import PrecisionOptimizer
 from agent.multi_step_planner import MultiStepPlanner
 from agent.experience_memory import ExperienceMemory
+from agent.k8s_executor import K8sExecutor
 
 # Conditional import for RAG
 try:
@@ -104,6 +105,7 @@ class XFSCIOrchestrator:
         self.precision_optimizer = PrecisionOptimizer(config_path)
         self.multi_step_planner = MultiStepPlanner(config_path)
         self.experience_memory = ExperienceMemory(config_path)
+        self.k8s_executor = K8sExecutor(config_path)
         
         # GNN Predictor (Layer 2)
         if GNN_AVAILABLE:
@@ -149,7 +151,7 @@ class XFSCIOrchestrator:
         logger.info(f"{'='*60}")
         
         # ===== TAHAP 1: Pandas Metric Analysis =====
-        logger.info("[1/7] 📊 Collecting metrics via Pandas...")
+        logger.info("[1/8] 📊 Collecting metrics via Pandas...")
         try:
             pandas_metrics = self.pandas_processor.process_realtime_metrics(
                 deployment_name=deployment_name,
@@ -174,7 +176,7 @@ class XFSCIOrchestrator:
         # ===== TAHAP 2: ML Prediction (GNN Layer 2) =====
         if ml_prediction is None:
             if self.gnn_predictor and self.gnn_predictor.is_ready:
-                logger.info("[2/7] 🧠 Running GNN Layer 2 (Topology-Aware Anomaly Prediction)...")
+                logger.info("[2/8] 🧠 Running GNN Layer 2 (Topology-Aware Anomaly Prediction)...")
                 try:
                     metrics_dict = {deployment_name: pandas_metrics.model_dump()}
                     ml_prediction = self.gnn_predictor.predict_target(
@@ -186,7 +188,7 @@ class XFSCIOrchestrator:
                     ml_prediction = None
 
             if ml_prediction is None:
-                logger.info("[2/7] 🧠 Using Pandas-detected anomaly (no ML model yet)...")
+                logger.info("[2/8] 🧠 Using Pandas-detected anomaly (no ML model yet)...")
                 anomaly = self.pandas_processor.detect_anomaly_pattern(
                     pandas_metrics.model_dump()
                 )
@@ -202,10 +204,10 @@ class XFSCIOrchestrator:
                     cascade_risk=[]
                 )
         else:
-            logger.info("[2/7] 🧠 Using provided ML prediction")
+            logger.info("[2/8] 🧠 Using provided ML prediction")
         
         # ===== TAHAP 3: Urgency Scoring =====
-        logger.info("[3/7] 📐 Calculating urgency score...")
+        logger.info("[3/8] 📐 Calculating urgency score...")
         urgency_score = self.scoring_engine.calculate_urgency_score(
             ml_prediction, pandas_metrics
         )
@@ -215,7 +217,7 @@ class XFSCIOrchestrator:
         )
         
         # ===== TAHAP 4: RAG Runbook Retrieval =====
-        logger.info("[4/7] 📚 Searching RAG runbooks...")
+        logger.info("[4/8] 📚 Searching RAG runbooks...")
         rag_content = ""
         rag_similarity = 0.0
         
@@ -243,7 +245,7 @@ class XFSCIOrchestrator:
                 logger.warning(f"RAG query failed: {e}")
         
         # ===== TAHAP 5: Experience Memory Lookup =====
-        logger.info("[5/7] 🧪 Querying past experiences...")
+        logger.info("[5/8] 🧪 Querying past experiences...")
         experience_texts = []
         try:
             situation_desc = self.pandas_processor.generate_situation_summary(
@@ -270,7 +272,7 @@ class XFSCIOrchestrator:
         )
         
         # ===== TAHAP 6: AI Agent Decision =====
-        logger.info("[6/7] 🤖 AI Agent making decision...")
+        logger.info("[6/8] 🤖 AI Agent making decision...")
         
         # Cek guardrails sebelum keputusan
         guardrail_block = self._check_guardrails(deployment_name)
@@ -363,12 +365,35 @@ class XFSCIOrchestrator:
             )
         
         # ===== TAHAP 7: Generate Explanation & Log =====
-        logger.info("[7/7] 📝 Generating explanation...")
+        logger.info("[7/8] 📝 Generating explanation...")
         explanation = self.decision_agent.explain_decision(decision, situation)
         logger.info(explanation)
         
         # Record action in history
         self._record_action_history(deployment_name, decision)
+        
+        # ===== TAHAP 8: Execute Action via K8sExecutor =====
+        execution_result = None
+        if decision.action not in (ActionType.NO_OP, ActionType.ESCALATE):
+            if dry_run:
+                logger.info("[8/8] 🔧 [DRY-RUN] Executing action in simulation mode...")
+                execution_result = self.k8s_executor.execute(decision, dry_run=True)
+            else:
+                logger.info("[8/8] 🔧 Executing LIVE action on Kubernetes cluster...")
+                execution_result = self.k8s_executor.execute(decision, dry_run=False)
+                
+                # Post-action health verification
+                if execution_result.get("success"):
+                    logger.info(f"⏳ Waiting {self.guardrail_config.get('post_healing_wait_seconds', 30)}s for health check...")
+                    time.sleep(self.guardrail_config.get("post_healing_wait_seconds", 30))
+                    health = self.k8s_executor.verify_health(deployment_name)
+                    execution_result["post_action_health"] = health
+                    if health.get("healthy"):
+                        logger.success(f"🩺 Post-action health check: ✅ HEALTHY")
+                    else:
+                        logger.warning(f"🩺 Post-action health check: ❌ UNHEALTHY — manual review recommended")
+        else:
+            logger.info(f"[8/8] ⏭️ Skipping execution (action={decision.action.value})")
         
         # Hitung waktu total
         elapsed = time.time() - start_time
@@ -376,6 +401,7 @@ class XFSCIOrchestrator:
         result = {
             "decision": decision.model_dump(),
             "explanation": explanation,
+            "execution": execution_result,
             "situation": {
                 "urgency_score": urgency_score,
                 "urgency_level": urgency_level.value,
@@ -389,7 +415,8 @@ class XFSCIOrchestrator:
         logger.success(
             f"\n✅ Pipeline complete in {elapsed:.1f}s | "
             f"Action: {decision.action.value} | "
-            f"Confidence: {decision.confidence:.0%}"
+            f"Confidence: {decision.confidence:.0%}" +
+            (f" | Execution: {'✅' if execution_result and execution_result.get('success') else '⏭️'}" if execution_result else "")
         )
         
         return result

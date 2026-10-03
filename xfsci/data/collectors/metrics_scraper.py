@@ -77,12 +77,16 @@ QUERIES = {
     
     # Memory usage percentage per pod (working set / limit)
     "memory_usage_percent": (
-        f'sum(container_memory_working_set_bytes{{'
+        f'((sum(container_memory_working_set_bytes{{'
         f'namespace="{TARGET_NAMESPACE}", container!="", container!="POD"'
-        f'}}) by (pod) / '
-        f'sum(container_spec_memory_limit_bytes{{'
+        f'}}) by (pod) / sum(kube_pod_container_resource_limits{{'
+        f'namespace="{TARGET_NAMESPACE}", resource="memory", unit="byte"'
+        f'}}) by (pod)) * 100) or '
+        f'((sum(container_memory_working_set_bytes{{'
         f'namespace="{TARGET_NAMESPACE}", container!="", container!="POD"'
-        f'}}) by (pod) * 100'
+        f'}}) by (pod) / sum(container_spec_memory_limit_bytes{{'
+        f'namespace="{TARGET_NAMESPACE}", container!="", container!="POD"'
+        f'}}) by (pod)) * 100)'
     ),
     
     # Pod restart count (kumulatif)

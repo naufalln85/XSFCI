@@ -272,6 +272,7 @@ class PandasMetricProcessor:
             "service_count": 0,
             "lookback_minutes": lookback_minutes,
             "degraded_features": [],
+            "metric_fallbacks": {},
             "reason": "collecting",
         }
         try:
@@ -297,7 +298,10 @@ class PandasMetricProcessor:
                 "memory_usage": f'sum(container_memory_working_set_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod)',
                 "memory_usage_percent": (
                     f'sum(container_memory_working_set_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod) / '
-                    f'sum(container_spec_memory_limit_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod) * 100'
+                    f'sum(kube_pod_container_resource_limits{{namespace="{ns}",resource="memory",unit="byte"}}) by (pod) * 100'
+                ),
+                "memory_limit_cadvisor_bytes": (
+                    f'sum(container_spec_memory_limit_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod)'
                 ),
                 "pod_restarts": f'sum(kube_pod_container_status_restarts_total{{namespace="{ns}"}}) by (pod)',
                 "net_rx_bytes": f'sum(rate(container_network_receive_bytes_total{{namespace="{ns}"}}[1m])) by (pod)',
@@ -324,6 +328,57 @@ class PandasMetricProcessor:
                 }
                 results = {name: future.result() for name, future in futures.items()}
 
+            def to_metric_frame(result, metric_name):
+                if result is None or result.empty:
+                    return None
+                pod_key = "pod" if "pod" in result.columns else "pod_name" if "pod_name" in result.columns else None
+                if pod_key is None:
+                    return None
+                frame = result[[pod_key, "timestamp", "value"]].copy()
+                frame.rename(columns={pod_key: "pod_name", "value": metric_name}, inplace=True)
+                frame["pod_name"] = frame["pod_name"].astype(str)
+                frame[metric_name] = pd.to_numeric(frame[metric_name], errors="coerce")
+                return frame.groupby(["pod_name", "timestamp"], as_index=False)[metric_name].mean()
+
+            # Prefer kube-state-metrics limits. If that series is unavailable
+            # or has gaps, fall back to cAdvisor's per-container limit metric.
+            usage_frame = to_metric_frame(results.get("memory_usage"), "memory_usage")
+            primary_pct = to_metric_frame(results.get("memory_usage_percent"), "memory_usage_percent")
+            cadvisor_limit = to_metric_frame(results.get("memory_limit_cadvisor_bytes"), "memory_limit_bytes")
+            fallback_pct = None
+            if usage_frame is not None and cadvisor_limit is not None:
+                fallback_pct = usage_frame.merge(cadvisor_limit, on=["pod_name", "timestamp"], how="inner")
+                fallback_pct = fallback_pct.loc[fallback_pct["memory_limit_bytes"] > 0].copy()
+                fallback_pct["memory_usage_percent"] = (
+                    fallback_pct["memory_usage"] / fallback_pct["memory_limit_bytes"] * 100.0
+                )
+                fallback_pct = fallback_pct[["pod_name", "timestamp", "memory_usage_percent"]]
+
+            if fallback_pct is not None and not fallback_pct.empty:
+                if primary_pct is None:
+                    combined_pct = fallback_pct
+                    used_fallback = True
+                else:
+                    combined_pct = primary_pct.merge(
+                        fallback_pct,
+                        on=["pod_name", "timestamp"],
+                        how="outer",
+                        suffixes=("_primary", "_fallback"),
+                    )
+                    primary_values = combined_pct["memory_usage_percent_primary"]
+                    fallback_values = combined_pct["memory_usage_percent_fallback"]
+                    valid_primary = np.isfinite(primary_values.to_numpy(dtype=float))
+                    used_fallback = bool((~valid_primary & np.isfinite(fallback_values.to_numpy(dtype=float))).any())
+                    combined_pct["memory_usage_percent"] = primary_values.where(valid_primary, fallback_values)
+                    combined_pct = combined_pct[["pod_name", "timestamp", "memory_usage_percent"]]
+                if used_fallback:
+                    status["metric_fallbacks"]["memory_usage_percent"] = "container_spec_memory_limit_bytes"
+                results["memory_usage_percent"] = combined_pct.rename(
+                    columns={"pod_name": "pod", "memory_usage_percent": "value"}
+                )
+            elif primary_pct is None or not np.isfinite(primary_pct["memory_usage_percent"].to_numpy(dtype=float)).any():
+                results["memory_usage_percent"] = None
+
             frames = []
             for metric_name in BASE_METRIC_COLS:
                 result = results.get(metric_name)
@@ -332,14 +387,9 @@ class PandasMetricProcessor:
                         status["degraded_features"].append(metric_name)
                         continue
                     raise RuntimeError(f"required Prometheus series unavailable: {metric_name}")
-                pod_key = "pod" if "pod" in result.columns else "pod_name" if "pod_name" in result.columns else None
-                if pod_key is None:
+                metric_frame = to_metric_frame(result, metric_name)
+                if metric_frame is None:
                     raise RuntimeError(f"Prometheus result for {metric_name} has no pod label")
-                metric_frame = result[[pod_key, "timestamp", "value"]].copy()
-                metric_frame.rename(columns={pod_key: "pod_name", "value": metric_name}, inplace=True)
-                metric_frame["pod_name"] = metric_frame["pod_name"].astype(str)
-                metric_frame[metric_name] = pd.to_numeric(metric_frame[metric_name], errors="coerce")
-                metric_frame = metric_frame.groupby(["pod_name", "timestamp"], as_index=False)[metric_name].mean()
                 frames.append(metric_frame)
 
             if not frames:

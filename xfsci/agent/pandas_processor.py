@@ -263,7 +263,14 @@ class PandasMetricProcessor:
         into the canonical service nodes. Missing required telemetry fails closed.
         """
         from data.preprocessors.feature_engineer import FeatureEngineer
-        from models.gnn.feature_contract import BASE_METRIC_COLS, FEATURE_PIPELINE_VERSION, MODEL_FEATURE_COLS
+        from models.gnn.feature_contract import (
+            APP_SPAN_SERVICES,
+            APP_SPAN_ZERO_SERVICES,
+            BASE_METRIC_COLS,
+            FEATURE_PIPELINE_VERSION,
+            MODEL_FEATURE_COLS,
+            application_metric_queries,
+        )
         from models.gnn.graph_dataset import SERVICE_NAMES, extract_service_name
 
         status = {
@@ -306,11 +313,7 @@ class PandasMetricProcessor:
                 "pod_restarts": f'sum(kube_pod_container_status_restarts_total{{namespace="{ns}"}}) by (pod)',
                 "net_rx_bytes": f'sum(rate(container_network_receive_bytes_total{{namespace="{ns}"}}[1m])) by (pod)',
                 "net_tx_bytes": f'sum(rate(container_network_transmit_bytes_total{{namespace="{ns}"}}[1m])) by (pod)',
-                "request_rate": f'sum(rate(http_server_requests_seconds_count{{namespace="{ns}"}}[1m])) by (pod)',
-                "error_rate": (
-                    f'sum(rate(http_server_requests_seconds_count{{namespace="{ns}",status=~"4..|5.."}}[1m])) by (pod) / '
-                    f'sum(rate(http_server_requests_seconds_count{{namespace="{ns}"}}[1m])) by (pod)'
-                ),
+                **application_metric_queries(ns),
             }
 
             def constant_zero(metric_name: str) -> bool:
@@ -319,8 +322,13 @@ class PandasMetricProcessor:
 
             # A source may be absent only if its training column was constant
             # zero. Preserve that training value but expose the missing source.
-            optional_zero_metrics = {name for name in BASE_METRIC_COLS if constant_zero(name)}
             app_metric_names = {"request_rate", "error_rate"}
+            # Application metrics require a real trace source even when their
+            # scaler happens to be constant; absence must not masquerade as 0.
+            optional_zero_metrics = {
+                name for name in BASE_METRIC_COLS
+                if name not in app_metric_names and constant_zero(name)
+            }
             with ThreadPoolExecutor(max_workers=len(queries)) as pool:
                 futures = {
                     name: pool.submit(self._query_prometheus_range, query, lookback_minutes, "5s")
@@ -331,7 +339,10 @@ class PandasMetricProcessor:
             def to_metric_frame(result, metric_name):
                 if result is None or result.empty:
                     return None
-                pod_key = "pod" if "pod" in result.columns else "pod_name" if "pod_name" in result.columns else None
+                pod_key = next(
+                    (name for name in ("pod", "pod_name", "k8s_pod_name") if name in result.columns),
+                    None,
+                )
                 if pod_key is None:
                     return None
                 frame = result[[pod_key, "timestamp", "value"]].copy()
@@ -397,6 +408,26 @@ class PandasMetricProcessor:
             raw = frames[0]
             for metric_frame in frames[1:]:
                 raw = raw.merge(metric_frame, on=["pod_name", "timestamp"], how="outer")
+            raw["service_name"] = raw["pod_name"].map(extract_service_name)
+
+            for metric_name in app_metric_names:
+                if metric_name not in raw.columns:
+                    raise RuntimeError(f"required trace-derived metric missing: {metric_name}")
+                missing_services = [
+                    service for service in APP_SPAN_SERVICES
+                    if not raw.loc[raw["service_name"] == service, metric_name].notna().any()
+                ]
+                if missing_services:
+                    raise RuntimeError(
+                        f"trace-derived {metric_name} unavailable for services: {missing_services}"
+                    )
+
+                # Redis has no server-span instrumentation in this deployment;
+                # its explicit zero policy is recorded in the feature contract.
+                zero_service_rows = raw["service_name"].isin(APP_SPAN_ZERO_SERVICES)
+                raw.loc[zero_service_rows, metric_name] = raw.loc[
+                    zero_service_rows, metric_name
+                ].fillna(0.0)
 
             for metric_name in optional_zero_metrics:
                 if metric_name not in raw.columns:
@@ -408,9 +439,6 @@ class PandasMetricProcessor:
             for metric_name in app_metric_names.intersection(raw.columns):
                 if raw[metric_name].isna().any():
                     status["degraded_features"].append(metric_name)
-                    # Consistent with metrics_scraper: NaN error ratio at zero
-                    # request volume is represented as a measured zero.
-                    raw[metric_name] = raw[metric_name].fillna(0.0)
 
             raw.sort_values(["pod_name", "timestamp"], inplace=True)
             for metric_name in BASE_METRIC_COLS:
@@ -473,7 +501,7 @@ class PandasMetricProcessor:
                 "available": True,
                 "feature_count": len(MODEL_FEATURE_COLS),
                 "service_count": len(snapshot),
-                "reason": "ok" if not status["degraded_features"] else "constant_zero_telemetry_unavailable",
+                "reason": "ok" if not status["degraded_features"] else "partial_telemetry_gaps",
                 "snapshot_timestamp": latest_by_pod["timestamp"].max().isoformat(),
             })
             self.last_gnn_snapshot_status = status
@@ -619,39 +647,51 @@ class PandasMetricProcessor:
         }
     
     def get_network_metrics(self, deployment_name: str) -> dict:
-        """Hitung metrik jaringan: RPS, error rate, latency."""
-        # Request rate (if using Istio/service mesh metrics)
-        query_rps = (
-            f'sum(rate(http_server_requests_seconds_count{{'
-            f'namespace="{self.target_namespace}",'
-            f'deployment="{deployment_name}"'
-            f'}}[5m]))'
+        """Summarize trace-derived server request rate, errors, and latency."""
+        import re
+        from models.gnn.feature_contract import (
+            application_metric_queries,
+            application_span_selector,
         )
+
+        pod_pattern = f"^{re.escape(deployment_name)}-.*"
+        app_queries = application_metric_queries(
+            self.target_namespace,
+            pod_name_regex=pod_pattern,
+        )
+        query_rps = app_queries["request_rate"]
         df_rps = self._query_prometheus(query_rps)
         rps = 0.0
         if df_rps is not None and not df_rps.empty:
             rps = df_rps["value"].sum()
-        
-        # Error rate
-        query_errors = (
-            f'sum(rate(http_server_requests_seconds_count{{'
-            f'namespace="{self.target_namespace}",'
-            f'deployment="{deployment_name}",'
-            f'status=~"5.."'
-            f'}}[5m]))'
-        )
-        df_errors = self._query_prometheus(query_errors)
+
+        df_error_ratios = self._query_prometheus(app_queries["error_rate"])
         error_rate = 0.0
-        if df_errors is not None and not df_errors.empty and rps > 0:
-            error_rate = (df_errors["value"].sum() / rps) * 100
-        
-        # Latency P50 dan P99
+        if (
+            df_rps is not None and not df_rps.empty
+            and df_error_ratios is not None and not df_error_ratios.empty
+            and rps > 0
+            and "k8s_pod_name" in df_rps.columns
+            and "k8s_pod_name" in df_error_ratios.columns
+        ):
+            weighted = df_rps[["k8s_pod_name", "value"]].merge(
+                df_error_ratios[["k8s_pod_name", "value"]],
+                on="k8s_pod_name",
+                suffixes=("_rps", "_error_fraction"),
+            )
+            error_rate = (
+                weighted["value_rps"].mul(weighted["value_error_fraction"]).sum()
+                / weighted["value_rps"].sum()
+            ) * 100
+
+        span_selector = application_span_selector(
+            self.target_namespace,
+            pod_name_regex=pod_pattern,
+        )
+        # Span metrics connector histogram units are configured as seconds.
         query_p50 = (
-            f'histogram_quantile(0.50, sum(rate('
-            f'http_server_requests_seconds_bucket{{'
-            f'namespace="{self.target_namespace}",'
-            f'deployment="{deployment_name}"'
-            f'}}[5m])) by (le)) * 1000'
+            f'histogram_quantile(0.50, '
+            f'sum by (le) (rate(xfsci_duration_seconds_bucket{{{span_selector}}}[5m]))) * 1000'
         )
         query_p99 = query_p50.replace("0.50", "0.99")
         

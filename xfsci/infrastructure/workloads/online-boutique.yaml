@@ -60,9 +60,6 @@ spec:
     metadata:
       labels:
         app: frontend
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
     spec:
       containers:
         - name: frontend
@@ -70,6 +67,10 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "8080"
             - name: PRODUCT_CATALOG_SERVICE_ADDR
@@ -139,9 +140,6 @@ spec:
     metadata:
       labels:
         app: cartservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "7070"
     spec:
       containers:
         - name: cartservice
@@ -149,6 +147,10 @@ spec:
           ports:
             - containerPort: 7070
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: REDIS_ADDR
               value: "redis-cart:6379"
           resources:
@@ -235,9 +237,6 @@ spec:
     metadata:
       labels:
         app: productcatalogservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "3550"
     spec:
       containers:
         - name: productcatalogservice
@@ -245,6 +244,10 @@ spec:
           ports:
             - containerPort: 3550
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "3550"
           resources:
@@ -288,9 +291,6 @@ spec:
     metadata:
       labels:
         app: currencyservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "7000"
     spec:
       containers:
         - name: currencyservice
@@ -298,6 +298,10 @@ spec:
           ports:
             - containerPort: 7000
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "7000"
             - name: DISABLE_PROFILER
@@ -343,9 +347,6 @@ spec:
     metadata:
       labels:
         app: paymentservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "50051"
     spec:
       containers:
         - name: paymentservice
@@ -353,6 +354,10 @@ spec:
           ports:
             - containerPort: 50051
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "50051"
             - name: DISABLE_PROFILER
@@ -398,9 +403,6 @@ spec:
     metadata:
       labels:
         app: shippingservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "50051"
     spec:
       containers:
         - name: shippingservice
@@ -408,6 +410,10 @@ spec:
           ports:
             - containerPort: 50051
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "50051"
           resources:
@@ -451,9 +457,6 @@ spec:
     metadata:
       labels:
         app: emailservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
     spec:
       containers:
         - name: emailservice
@@ -461,6 +464,10 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "8080"
             - name: DISABLE_PROFILER
@@ -506,9 +513,6 @@ spec:
     metadata:
       labels:
         app: checkoutservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "5050"
     spec:
       containers:
         - name: checkoutservice
@@ -516,6 +520,10 @@ spec:
           ports:
             - containerPort: 5050
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "5050"
             - name: PRODUCT_CATALOG_SERVICE_ADDR
@@ -571,9 +579,6 @@ spec:
     metadata:
       labels:
         app: recommendationservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
     spec:
       containers:
         - name: recommendationservice
@@ -581,6 +586,10 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "8080"
             - name: PRODUCT_CATALOG_SERVICE_ADDR
@@ -626,9 +635,6 @@ spec:
     metadata:
       labels:
         app: adservice
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9555"
     spec:
       containers:
         - name: adservice
@@ -636,6 +642,10 @@ spec:
           ports:
             - containerPort: 9555
           env:
+            - name: ENABLE_TRACING
+              value: "1"
+            - name: COLLECTOR_SERVICE_ADDR
+              value: "otel-collector:4317"
             - name: PORT
               value: "9555"
           resources:

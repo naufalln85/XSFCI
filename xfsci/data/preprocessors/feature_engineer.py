@@ -52,6 +52,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.gnn.feature_contract import (
+    APP_SPAN_ZERO_SERVICES,
     BASE_METRIC_COLS,
     DERIVED_FEATURE_COLS,
     FEATURE_PIPELINE_VERSION,
@@ -277,7 +278,7 @@ class FeatureEngineer:
           - memory_slope_12: pod yang memory-nya sedang naik signifikan
           - restart_delta: pod yang baru saja restart
           - net_asymmetry: traffic yang tidak simetris
-          - error_rate: tingkat error HTTP/gRPC
+          - error_rate: fraction of server spans with OpenTelemetry Error status
         """
         # Rumus berbatas tetap agar hasilnya identik di data training dan live.
         # Normalisasi min-max final tetap memakai scaler yang disimpan.
@@ -379,6 +380,9 @@ class FeatureEngineer:
             "version": FEATURE_PIPELINE_VERSION,
             "features": MODEL_FEATURE_COLS,
             "normalization": "minmax_clip_0_1",
+            "request_rate_source": "otel_span_metrics_server_calls_per_second",
+            "error_rate_source": "otel_span_metrics_status_error_fraction",
+            "app_metrics_zero_for_services": list(APP_SPAN_ZERO_SERVICES),
             "error_rate_unit": "fraction_0_1",
             "cpu_usage_unit": "cores",
             "memory_usage_unit": "bytes",

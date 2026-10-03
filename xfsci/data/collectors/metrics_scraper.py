@@ -10,8 +10,8 @@ Metrik yang dikumpulkan per pod:
   - Memory usage (bytes & percent)
   - Pod restart count
   - Network RX/TX bytes per second
-  - Request rate (ops/sec) - jika tersedia
-  - Error rate fraction [0, 1] - jika tersedia
+  - Request rate (server spans/sec) from OpenTelemetry span metrics
+  - Error rate fraction [0, 1] from OpenTelemetry span status
   - Latency P50/P95/P99 (ms) - jika tersedia
 
 Cara pakai:
@@ -36,6 +36,15 @@ from pathlib import Path
 import requests
 import pandas as pd
 from loguru import logger
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models.gnn.feature_contract import (
+    APP_SPAN_SERVICES,
+    application_metric_queries,
+)
 
 # ============================================================
 # CONFIGURATION
@@ -112,24 +121,9 @@ QUERIES = {
         f'}}[1m])) by (pod)'
     ),
     
-    # --- Application Metrics (jika service mengexpose metrics) ---
-    
-    # HTTP request rate per pod (jika ada)
-    "request_rate": (
-        f'sum(rate(http_server_requests_seconds_count{{'
-        f'namespace="{TARGET_NAMESPACE}"'
-        f'}}[1m])) by (pod)'
-    ),
-    
-    # HTTP error rate fraction [0, 1] per pod (4xx + 5xx / total)
-    "error_rate": (
-        f'sum(rate(http_server_requests_seconds_count{{'
-        f'namespace="{TARGET_NAMESPACE}", status=~"4..|5.."'
-        f'}}[1m])) by (pod) / '
-        f'sum(rate(http_server_requests_seconds_count{{'
-        f'namespace="{TARGET_NAMESPACE}"'
-        f'}}[1m])) by (pod)'
-    ),
+    # Canonical server-span request rate and OTel error fraction. Keep these
+    # query definitions shared with live inference in feature_contract.py.
+    **application_metric_queries(TARGET_NAMESPACE),
 }
 
 
@@ -207,7 +201,12 @@ class XFSCIMetricsScraper:
             parsed = {}
             
             for result in results:
-                pod_name = result["metric"].get("pod", "unknown")
+                pod_name = (
+                    result["metric"].get("pod")
+                    or result["metric"].get("k8s_pod_name")
+                    or result["metric"].get("pod_name")
+                    or "unknown"
+                )
                 # Value format: [timestamp, "value_string"]
                 value_str = result["value"][1]
                 
@@ -244,6 +243,31 @@ class XFSCIMetricsScraper:
         all_metrics = {}
         for metric_name, promql in QUERIES.items():
             all_metrics[metric_name] = self.query_prometheus(promql)
+
+        missing_app_metrics = [
+            name for name in ("request_rate", "error_rate")
+            if not all_metrics.get(name)
+        ]
+        if missing_app_metrics:
+            logger.warning(
+                "Skipping training sample: required trace-derived application "
+                f"metrics unavailable: {', '.join(missing_app_metrics)}"
+            )
+            return []
+
+        missing_span_services = [
+            service for service in APP_SPAN_SERVICES
+            if not any(
+                pod == service or pod.startswith(f"{service}-")
+                for pod in all_metrics["request_rate"]
+            )
+        ]
+        if missing_span_services:
+            logger.warning(
+                "Skipping training sample: no server-span requests observed for "
+                f"services: {', '.join(missing_span_services)}"
+            )
+            return []
         
         # Kumpulkan semua pod names yang unik
         all_pods = set()

@@ -204,15 +204,16 @@ class PandasMetricProcessor:
             DataFrame dengan kolom [timestamp, value, ...labels]
         """
         try:
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(minutes=duration_minutes)
+            now_ts = int(time.time() // 5) * 5
+            end_time_ts = now_ts
+            start_time_ts = now_ts - (duration_minutes * 60)
             
             response = requests.get(
                 f"{self.prometheus_url}/api/v1/query_range",
                 params={
                     "query": query,
-                    "start": start_time.timestamp(),
-                    "end": end_time.timestamp(),
+                    "start": start_time_ts,
+                    "end": end_time_ts,
                     "step": step,
                 },
                 timeout=15
@@ -349,6 +350,7 @@ class PandasMetricProcessor:
                 frame.rename(columns={pod_key: "pod_name", "value": metric_name}, inplace=True)
                 frame["pod_name"] = frame["pod_name"].astype(str)
                 frame[metric_name] = pd.to_numeric(frame[metric_name], errors="coerce")
+                frame["timestamp"] = pd.to_datetime(frame["timestamp"]).dt.round("5s")
                 return frame.groupby(["pod_name", "timestamp"], as_index=False)[metric_name].mean()
 
             # Prefer kube-state-metrics limits. If that series is unavailable

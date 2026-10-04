@@ -58,6 +58,7 @@ from models.gnn.feature_contract import (
     FEATURE_PIPELINE_VERSION,
     MODEL_FEATURE_COLS,
 )
+from models.gnn.session_split import split_session_ids
 
 BASE_DIR = PROJECT_ROOT
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
@@ -88,6 +89,10 @@ class FeatureEngineer:
     def __init__(self):
         self.scaler_params = {}
 
+    @staticmethod
+    def _group_columns(df: pd.DataFrame) -> list[str]:
+        return (["session_id"] if "session_id" in df.columns else []) + ["pod_name"]
+
     def load(self, csv_path: Path) -> pd.DataFrame:
         logger.info(f"Loading: {csv_path.name}")
         df = pd.read_csv(csv_path)
@@ -107,13 +112,14 @@ class FeatureEngineer:
 
     def add_delta_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Hitung perubahan (delta) metrik antara dua timestep per pod."""
-        df = df.sort_values(["pod_name", "timestamp"]).copy()
+        group_columns = self._group_columns(df)
+        df = df.sort_values(group_columns + ["timestamp"]).copy()
 
         # Delta CPU: selisih cpu_usage antara step sekarang dan sebelumnya
-        df["cpu_delta"] = df.groupby("pod_name")["cpu_usage"].diff().fillna(0)
+        df["cpu_delta"] = df.groupby(group_columns)["cpu_usage"].diff().fillna(0)
 
         # Delta Memory (bytes)
-        df["memory_delta"] = df.groupby("pod_name")["memory_usage"].diff().fillna(0)
+        df["memory_delta"] = df.groupby(group_columns)["memory_usage"].diff().fillna(0)
 
         # Memory Growth Rate (MB per menit)
         df["memory_growth_rate"] = (
@@ -121,7 +127,7 @@ class FeatureEngineer:
         ).round(4)
 
         # Restart delta (kenaikan restart count)
-        df["restart_delta"] = df.groupby("pod_name")["pod_restarts"].diff().clip(0).fillna(0).astype(int)
+        df["restart_delta"] = df.groupby(group_columns)["pod_restarts"].diff().clip(0).fillna(0).astype(int)
 
         logger.info("  Delta features added: cpu_delta, memory_delta, memory_growth_rate, restart_delta")
         return df
@@ -131,25 +137,26 @@ class FeatureEngineer:
         Hitung rolling statistics per pod.
         window=5 berarti 5 timestep = 25 detik (interval 5s).
         """
-        df = df.sort_values(["pod_name", "timestamp"]).copy()
+        group_columns = self._group_columns(df)
+        df = df.sort_values(group_columns + ["timestamp"]).copy()
 
         # Rolling mean CPU (trend jangka pendek)
         df["cpu_rolling_mean_5"] = (
-            df.groupby("pod_name")["cpu_usage"]
+            df.groupby(group_columns)["cpu_usage"]
               .transform(lambda x: x.rolling(window, min_periods=1).mean())
               .round(6)
         )
 
         # Rolling std CPU (volatility / instabilitas)
         df["cpu_rolling_std_5"] = (
-            df.groupby("pod_name")["cpu_usage"]
+            df.groupby(group_columns)["cpu_usage"]
               .transform(lambda x: x.rolling(window, min_periods=1).std().fillna(0))
               .round(6)
         )
 
         # Rolling mean Memory
         df["mem_rolling_mean_5"] = (
-            df.groupby("pod_name")["memory_usage"]
+            df.groupby(group_columns)["memory_usage"]
               .transform(lambda x: x.rolling(window, min_periods=1).mean())
               .round(2)
         )
@@ -193,7 +200,8 @@ class FeatureEngineer:
         Ini KRITIS karena memory_delta hanya melihat selisih 1-step,
         sementara memory leak memiliki TREND naik yang gradual.
         """
-        df = df.sort_values(["pod_name", "timestamp"]).copy()
+        group_columns = self._group_columns(df)
+        df = df.sort_values(group_columns + ["timestamp"]).copy()
 
         def rolling_slope(series, w):
             """Hitung slope linear (least-squares) pada rolling window."""
@@ -232,7 +240,7 @@ class FeatureEngineer:
         # Normalize memory to MB sebelum hitung slope (agar unit lebih mudah diinterpretasi)
         df["_mem_mb"] = df["memory_usage"] / (1024**2)
         df["memory_slope_12"] = (
-            df.groupby("pod_name")["_mem_mb"]
+            df.groupby(group_columns)["_mem_mb"]
               .transform(lambda x: rolling_slope(x, window))
               .round(4)
         )
@@ -252,7 +260,8 @@ class FeatureEngineer:
         Dengan z-score per-pod, anomali diukur berdasarkan
         deviasi dari BASELINE masing-masing pod.
         """
-        df = df.sort_values(["pod_name", "timestamp"]).copy()
+        group_columns = self._group_columns(df)
+        df = df.sort_values(group_columns + ["timestamp"]).copy()
 
         # Baseline kausal: gunakan hanya 180 sampel sebelumnya (15 menit),
         # supaya rumus training dapat diulang saat inferensi live tanpa melihat masa depan.
@@ -263,7 +272,7 @@ class FeatureEngineer:
             std = rolling.std().replace(0, np.nan)
             return ((series - mean) / std).replace([np.inf, -np.inf], np.nan).fillna(0).clip(-5, 5)
 
-        df["cpu_zscore_pod"] = df.groupby("pod_name")["cpu_usage"].transform(causal_zscore).round(4)
+        df["cpu_zscore_pod"] = df.groupby(group_columns)["cpu_usage"].transform(causal_zscore).round(4)
 
         logger.info("  CPU z-score per pod added: cpu_zscore_pod")
         return df
@@ -320,6 +329,32 @@ class FeatureEngineer:
                 }
         self.scaler_params = params
         return params
+
+    def select_scaler_fit_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fit normalization only on training sessions to avoid holdout leakage."""
+        if "session_id" not in df.columns:
+            raise ValueError(
+                "Dataset has no session_id. Label independent collection sessions "
+                "with data_labeler.py --session-id before feature engineering."
+            )
+        session_order = list(dict.fromkeys(
+            df.sort_values("timestamp")["session_id"].dropna().astype(str).tolist()
+        ))
+        if len(session_order) < 3:
+            raise ValueError(
+                f"At least 3 independent sessions are required for train-only scaling; found {len(session_order)}."
+            )
+        train_sessions, val_sessions, test_sessions = split_session_ids(session_order)
+        if not train_sessions or not val_sessions or not test_sessions:
+            raise ValueError("Session split must contain train, validation, and test sessions.")
+        fit_rows = df[df["session_id"].astype(str).isin(train_sessions)].copy()
+        if fit_rows.empty:
+            raise ValueError("No feature rows belong to the training sessions.")
+        logger.info(
+            "Scaler fit uses training sessions only | "
+            f"train={train_sessions} | validation={val_sessions} | test={test_sessions}"
+        )
+        return fit_rows
 
     def apply_minmax_normalization(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -405,9 +440,10 @@ class FeatureEngineer:
         df = self.add_cpu_zscore_per_pod(df)
         df = self.add_anomaly_score(df)
         df = self.add_label_encoding(df)
-        self.compute_scaler_params(df)
+        scaler_fit_df = self.select_scaler_fit_rows(df)
+        self.compute_scaler_params(scaler_fit_df)
         df = self.apply_minmax_normalization(df)
-        df = df.sort_values(["pod_name", "timestamp"]).reset_index(drop=True)
+        df = df.sort_values(self._group_columns(df) + ["timestamp"]).reset_index(drop=True)
         self.print_summary(df)
         out = self.save(df)
         return df, out

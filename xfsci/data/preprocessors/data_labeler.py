@@ -31,6 +31,7 @@ import os
 import sys
 import argparse
 import json
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -139,10 +140,13 @@ class XFSCIDataLabeler:
         logger.success(f"Saved: {output_path}")
         return output_path
 
-    def run(self, csv_path: Path, output_path: Path = None):
+    def run(self, csv_path: Path, output_path: Path = None, session_id: str = None):
         df = self.load_raw_csv(csv_path)
         logger.info("Applying labels...")
         df = self.apply_labels(df)
+        if session_id:
+            df["session_id"] = str(session_id)
+            logger.info(f"  Session ID: {session_id}")
         self.print_distribution(df)
         out = self.save(df, output_path)
         return df, out
@@ -216,11 +220,61 @@ def interactive_input() -> dict:
     return windows
 
 
+def windows_from_fault_log(log_path: Path, expected_session_id: str = None) -> dict:
+    """Read precise UTC start/end markers emitted by run_faults.sh."""
+    pattern = re.compile(
+        r"XFSCI_FAULT_EVENT session_id=(?P<session>\S+) fault=(?P<fault>\S+) "
+        r"phase=(?P<phase>start|end) timestamp=(?P<timestamp>\S+) targets=(?P<targets>\S+)"
+    )
+    events = {}
+    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            match = pattern.search(line)
+            if not match:
+                continue
+            item = match.groupdict()
+            if expected_session_id and item["session"] != expected_session_id:
+                raise ValueError(
+                    f"Fault log session {item['session']!r} does not match "
+                    f"--session-id {expected_session_id!r}"
+                )
+            fault = item["fault"]
+            events.setdefault(fault, {})[item["phase"]] = {
+                "time": pd.to_datetime(item["timestamp"], utc=True).tz_localize(None),
+                "target_pods": [name for name in item["targets"].split(",") if name],
+            }
+
+    required = {"cpu_stress", "memory_leak", "pod_crash", "net_latency"}
+    missing = required - set(events)
+    if missing:
+        raise ValueError(f"Fault log is missing scenarios: {sorted(missing)}")
+
+    windows = {}
+    for fault in sorted(required):
+        phases = events[fault]
+        if "start" not in phases or "end" not in phases:
+            raise ValueError(f"Fault log has incomplete start/end markers for {fault}")
+        if phases["end"]["time"] <= phases["start"]["time"]:
+            raise ValueError(f"Fault log end time is not after start time for {fault}")
+        if phases["start"]["target_pods"] != phases["end"]["target_pods"]:
+            raise ValueError(f"Fault target list changed during {fault}")
+        windows[fault] = {
+            "start": phases["start"]["time"],
+            "end": phases["end"]["time"],
+            "target_pods": phases["start"]["target_pods"],
+        }
+    return windows
+
+
 def main():
     parser = argparse.ArgumentParser(description="XFSCI Data Labeler - Fase 3A (Multi-Session)")
     parser.add_argument("--input",       type=str, default=None, help="Path CSV input")
     parser.add_argument("--output",      type=str, default=None, help="Path CSV output")
     parser.add_argument("--interactive", action="store_true",    help="Input waktu fault manual")
+    parser.add_argument("--fault-log", type=str, default=None,
+                        help="Log run_faults.sh dengan marker waktu presisi")
+    parser.add_argument("--session-id", type=str, default=None,
+                        help="ID sesi independen untuk session-aware split")
     parser.add_argument("--session",     type=str, default="standard",
                         choices=["standard", "turbo"],
                         help="Profil sesi: standard (55min) atau turbo (15min)")
@@ -295,21 +349,32 @@ def main():
         logger.info(f"Using latest CSV: {csv_path.name}")
 
     # Tentukan fault windows
-    if args.interactive:
+    if bool(args.fault_log) != bool(args.session_id):
+        parser.error("--fault-log and --session-id must be provided together")
+
+    if args.fault_log:
+        fault_windows = windows_from_fault_log(Path(args.fault_log), args.session_id)
+        logger.info(f"Loaded precise fault windows from {args.fault_log}")
+    elif args.interactive:
         fault_windows = interactive_input()
     else:
         fault_windows = auto_detect_windows(csv_path, session=args.session)
 
     # Simpan fault_windows.json
     windows_json = PROCESSED_DIR / "fault_windows.json"
-    serialized = {k: {"start": str(v["start"]), "end": str(v["end"])} for k, v in fault_windows.items()}
+    serialized = {
+        k: {"start": str(v["start"]), "end": str(v["end"]), "target_pods": v.get("target_pods")}
+        for k, v in fault_windows.items()
+    }
+    if args.session_id:
+        serialized["session_id"] = args.session_id
     windows_json.write_text(json.dumps(serialized, indent=2))
     logger.info(f"Windows saved: {windows_json.name}")
 
     # Jalankan
     output_path = Path(args.output) if args.output else None
     labeler = XFSCIDataLabeler(fault_windows)
-    df, out = labeler.run(csv_path, output_path)
+    df, out = labeler.run(csv_path, output_path, session_id=args.session_id)
 
     logger.success("Labeling selesai!")
     logger.info("Next: python data/preprocessors/data_cleaner.py")

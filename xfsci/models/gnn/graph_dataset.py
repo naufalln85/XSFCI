@@ -39,6 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.gnn.feature_contract import FEATURE_PIPELINE_VERSION
+from models.gnn.session_split import split_session_ids
 
 try:
     from torch_geometric.data import Data, Dataset
@@ -363,23 +364,28 @@ def create_graph_snapshots_from_csv(csv_path: Path,
         self_loops=True,
     )
 
-    # Deteksi session_id jika belum ada (misal digabung multi-sesi dengan jeda > 5 menit)
+    # Deteksi session_id jika belum ada (misal digabung multi-sesi dengan jeda > 5 menit).
     if "session_id" not in df.columns:
         sorted_ts = df["timestamp"].sort_values()
         gaps = sorted_ts.diff() > pd.Timedelta(minutes=5)
-        if gaps.any():
-            session_map = gaps.cumsum()
-            df["session_id"] = "session_" + session_map.astype(str)
+        session_map = gaps.cumsum()
+        df["session_id"] = "session_" + session_map.reindex(df.index).fillna(0).astype(int).astype(str)
 
     # Kelompokkan berdasarkan interval waktu (5 detik)
     # Bulatkan timestamp ke kelipatan 5 detik terdekat
     df["time_bin"] = df["timestamp"].dt.floor("5s")
-    grouped = df.groupby("time_bin")
+    df = df.sort_values(["timestamp", "pod_name"])
+    grouped = df.groupby(["session_id", "time_bin"], sort=False)
 
     snapshots: List[Data] = []
     last_known_features = {svc: np.zeros(num_features, dtype=np.float32) for svc in SERVICE_NAMES}
+    last_session = None
 
-    for time_bin, group in grouped:
+    for (session_val, time_bin), group in grouped:
+        session_val = str(session_val)
+        if session_val != last_session:
+            last_known_features = {svc: np.zeros(num_features, dtype=np.float32) for svc in SERVICE_NAMES}
+            last_session = session_val
         x_matrix = np.zeros((NUM_SERVICES, num_features), dtype=np.float32)
         y_vector = np.zeros(NUM_SERVICES, dtype=np.int64)
 
@@ -408,8 +414,6 @@ def create_graph_snapshots_from_csv(csv_path: Path,
         # Graph-level urgency: 0.0 jika semua normal, 1.0 jika ada minimal 1 anomali
         has_anomaly = (y_vector > 0).any()
         y_graph = 1.0 if has_anomaly else 0.0
-
-        session_val = str(group["session_id"].iloc[0]) if "session_id" in group.columns else None
 
         data_obj = Data(
             x=torch.tensor(x_matrix, dtype=torch.float32),
@@ -473,14 +477,10 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
     ))
 
     if len(unique_sessions) >= 3:
-        n_train = max(1, int(len(unique_sessions) * train_ratio))
-        n_val = max(1, int(len(unique_sessions) * val_ratio))
-        if n_train + n_val >= len(unique_sessions):
-            n_train = max(1, len(unique_sessions) - 2)
-            n_val = 1
-        train_sess = set(unique_sessions[:n_train])
-        val_sess = set(unique_sessions[n_train:n_train + n_val])
-        test_sess = set(unique_sessions[n_train + n_val:])
+        train_ids, val_ids, test_ids = split_session_ids(unique_sessions, train_ratio, val_ratio)
+        train_sess = set(train_ids)
+        val_sess = set(val_ids)
+        test_sess = set(test_ids)
 
         train_data = [s for s in snapshots if s.session_id in train_sess]
         val_data = [s for s in snapshots if s.session_id in val_sess]
@@ -491,6 +491,7 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
         logger.info(f"  Train : {len(train_data):>5,} graf ({len(train_data)/total_snapshots*100:4.1f}%)")
         logger.info(f"  Val   : {len(val_data):>5,} graf ({len(val_data)/total_snapshots*100:4.1f}%)")
         logger.info(f"  Test  : {len(test_data):>5,} graf ({len(test_data)/total_snapshots*100:4.1f}%)")
+        logger.info(f"  Test classes: {dict(pd.Series(np.concatenate([s.y.numpy() for s in test_data])).value_counts().sort_index())}")
     elif len(unique_sessions) == 2:
         train_data = [s for s in snapshots if s.session_id == unique_sessions[0]]
         test_data = [s for s in snapshots if s.session_id == unique_sessions[1]]
@@ -530,6 +531,11 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
         "num_classes": len(LABEL_MAP),
         "total_snapshots": total_snapshots,
         "num_edges": train_data[0].edge_index.shape[1],
+        "session_aware": len(unique_sessions) >= 3,
+        "session_count": len(unique_sessions),
+        "train_sessions": sorted({s.session_id for s in train_data if getattr(s, "session_id", None) is not None}),
+        "validation_sessions": sorted({s.session_id for s in val_data if getattr(s, "session_id", None) is not None}),
+        "test_sessions": sorted({s.session_id for s in test_data if getattr(s, "session_id", None) is not None}),
     }
 
     return train_loader, val_loader, test_loader, info

@@ -1,0 +1,2 @@
+# Long-running telemetry/quality campaign output is retained locally on the VM.
+/artifacts/gnn_quality_campaigns/

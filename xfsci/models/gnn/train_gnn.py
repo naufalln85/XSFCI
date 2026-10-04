@@ -439,7 +439,9 @@ class GNNTrainer:
                     "best_epoch": epoch,
                     "best_score": best_score,
                 }
-                torch.save(rt_ckpt, WEIGHTS_DIR / "gnn_best.pt")
+                # Never expose a mid-training checkpoint at the runtime model path.
+                # The final held-out test gate below promotes only a completed model.
+                torch.save(rt_ckpt, WEIGHTS_DIR / "gnn_training_candidate.pt")
             else:
                 patience_counter += 1
 
@@ -536,12 +538,23 @@ class GNNTrainer:
                 "top1_rca_accuracy": float(test_res["a_at_1"]),
                 "node_accuracy": float(test_res["node_acc"]),
                 "fault_macro_f1": float(test_res["fault_f1"]),
+                "test_class_support": {
+                    IDX_TO_LABEL[idx]: int(support)
+                    for idx, support in enumerate(test_res["support_per_class"])
+                },
+                "test_class_f1": {
+                    IDX_TO_LABEL[idx]: float(class_f1)
+                    for idx, class_f1 in enumerate(test_res["f1_per_class"])
+                },
                 "training_time_seconds": training_time,
                 "timestamp": datetime.utcnow().isoformat(),
             }
         }
 
         torch.save(checkpoint, model_path)
+        candidate_path = WEIGHTS_DIR / "gnn_training_candidate.pt"
+        if candidate_path.exists():
+            candidate_path.unlink()
         logger.success(f"\nModel tersimpan di: {model_path} ({model_path.stat().st_size / 1024:.1f} KB)")
 
         with open(metrics_path, "w", encoding="utf-8") as f:

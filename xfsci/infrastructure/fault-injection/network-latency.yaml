@@ -43,19 +43,31 @@ spec:
           # Dapatkan network interface utama
           IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
           echo "Interface: $IFACE"
+          RULE_ADDED=0
+
+          cleanup() {
+            if [ "$RULE_ADDED" -eq 1 ] && [ -n "$IFACE" ]; then
+              tc qdisc del dev "$IFACE" root 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT INT TERM
           
           # Tambahkan latency 200ms ± 50ms dan 5% packet loss
-          tc qdisc add dev $IFACE root netem \
+          if ! tc qdisc add dev "$IFACE" root netem \
             delay 200ms 50ms distribution normal \
             loss 5% \
-            duplicate 1%
+            duplicate 1%; then
+            echo "Could not attach netem qdisc; preserving any existing node qdisc."
+            exit 1
+          fi
+          RULE_ADDED=1
           
           echo "✅ Network fault applied: 200ms delay, 5% packet loss"
           echo "⏰ Running for 180 seconds..."
           sleep 180
           
           # Cleanup: hapus rule tc
-          tc qdisc del dev $IFACE root 2>/dev/null
+          cleanup
           echo "🧹 Network fault cleaned up"
       securityContext:
         capabilities:

@@ -35,6 +35,7 @@ NC='\033[0m' # No Color
 
 NAMESPACE="demo"
 FAULT_DIR="$(dirname "$0")"
+SESSION_ID="${XFSCI_SESSION_ID:-manual}"
 
 log_info() {
     echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $1"
@@ -51,6 +52,24 @@ log_normal() {
 log_warn() {
     echo -e "${YELLOW}[$(date '+%H:%M:%S')] ⚠️ WARNING:${NC} $1"
 }
+
+emit_fault_event() {
+    local fault="$1" phase="$2" targets="$3"
+    printf 'XFSCI_FAULT_EVENT session_id=%s fault=%s phase=%s timestamp=%s targets=%s\n' \
+        "$SESSION_ID" "$fault" "$phase" "$(date -u '+%Y-%m-%dT%H:%M:%S')" "$targets"
+}
+
+cleanup_faults() {
+    log_warn "Cleaning up fault-injection resources in namespace '$NAMESPACE'..."
+    kubectl delete -f "$FAULT_DIR/cpu-stress.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete -f "$FAULT_DIR/memory-leak.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete -f "$FAULT_DIR/network-latency.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl delete -f "$FAULT_DIR/pod-crash.yaml" --ignore-not-found >/dev/null 2>&1 || true
+}
+
+trap cleanup_faults EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Header
 echo "============================================"
@@ -79,6 +98,7 @@ sleep 600  # 10 menit
 
 # ===== FASE 2: CPU STRESS =====
 log_fault "Deploying CPU Stress fault..."
+emit_fault_event "cpu_stress" "start" "adservice,cartservice,productcatalogservice,redis-cart"
 echo "  → Target: Worker 2"
 echo "  → Duration: 120 seconds"
 echo "  → Data label: CRITICAL (cpu-stress)"
@@ -87,11 +107,13 @@ sleep 150  # 2.5 menit (120s fault + 30s buffer)
 
 # Cleanup CPU stress
 kubectl delete -f "$FAULT_DIR/cpu-stress.yaml" --ignore-not-found
+emit_fault_event "cpu_stress" "end" "adservice,cartservice,productcatalogservice,redis-cart"
 log_normal "CPU stress cleaned. Recovery period (5 minutes)..."
 sleep 300  # 5 menit recovery
 
 # ===== FASE 3: MEMORY LEAK =====
 log_fault "Deploying Memory Leak fault..."
+emit_fault_event "memory_leak" "start" "adservice,cartservice,productcatalogservice,redis-cart"
 echo "  → Target: Worker 2"
 echo "  → Duration: 300 seconds (gradual increase)"
 echo "  → Data label: WARNING -> CRITICAL (memory-leak)"
@@ -100,11 +122,13 @@ sleep 330  # 5.5 menit
 
 # Cleanup memory leak
 kubectl delete -f "$FAULT_DIR/memory-leak.yaml" --ignore-not-found
+emit_fault_event "memory_leak" "end" "adservice,cartservice,productcatalogservice,redis-cart"
 log_normal "Memory leak cleaned. Recovery period (5 minutes)..."
 sleep 300  # 5 menit recovery
 
 # ===== FASE 4: POD CRASH =====
 log_fault "Deploying Pod Crash CronJob..."
+emit_fault_event "pod_crash" "start" "frontend,cartservice,recommendationservice,paymentservice"
 echo "  → Target: Random pods (frontend, cart, recommendation, payment)"
 echo "  → Frequency: Every 3 minutes"
 echo "  → Duration: 15 minutes"
@@ -114,20 +138,24 @@ sleep 900  # 15 menit
 
 # Cleanup pod crash CronJob
 kubectl delete -f "$FAULT_DIR/pod-crash.yaml" --ignore-not-found
+emit_fault_event "pod_crash" "end" "frontend,cartservice,recommendationservice,paymentservice"
 log_normal "Pod crash CronJob cleaned. Recovery period (5 minutes)..."
 sleep 300  # 5 menit recovery
 
 # ===== FASE 5: NETWORK LATENCY =====
 log_fault "Deploying Network Latency fault..."
+emit_fault_event "net_latency" "start" "checkoutservice,currencyservice,emailservice,shippingservice"
 echo "  → Target: Worker 3"
 echo "  → Latency: 200ms ± 50ms, 5% packet loss"
 echo "  → Duration: 180 seconds"
 echo "  → Data label: WARNING (network-latency)"
 kubectl apply -f "$FAULT_DIR/network-latency.yaml"
+kubectl wait --for=condition=Ready pod/fault-network-latency -n "$NAMESPACE" --timeout=90s
 sleep 210  # 3.5 menit
 
 # Cleanup network latency
 kubectl delete -f "$FAULT_DIR/network-latency.yaml" --ignore-not-found
+emit_fault_event "net_latency" "end" "checkoutservice,currencyservice,emailservice,shippingservice"
 log_normal "Network latency cleaned. Final recovery period (5 minutes)..."
 sleep 300  # 5 menit recovery terakhir
 

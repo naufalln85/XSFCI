@@ -439,10 +439,12 @@ class PandasMetricProcessor:
             for metric_name in app_metric_names.intersection(raw.columns):
                 if raw[metric_name].isna().any():
                     status["degraded_features"].append(metric_name)
+                    # Idle intervals with verified instrumentation have 0 request volume / errors
+                    raw[metric_name] = raw[metric_name].fillna(0.0)
 
             raw.sort_values(["pod_name", "timestamp"], inplace=True)
             for metric_name in BASE_METRIC_COLS:
-                if metric_name in optional_zero_metrics:
+                if metric_name in optional_zero_metrics or metric_name in app_metric_names:
                     continue
                 raw[metric_name] = raw.groupby("pod_name", sort=False)[metric_name].ffill(limit=1)
 

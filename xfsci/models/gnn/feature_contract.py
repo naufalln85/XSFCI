@@ -3,7 +3,7 @@
 import json
 
 
-FEATURE_PIPELINE_VERSION = "xfsci-gnn-21f-online-v3"
+FEATURE_PIPELINE_VERSION = "xfsci-gnn-21f-online-v4"
 
 BASE_METRIC_COLS = [
     "cpu_usage", "memory_usage", "memory_usage_percent", "pod_restarts",
@@ -19,8 +19,6 @@ DERIVED_FEATURE_COLS = [
 
 MODEL_FEATURE_COLS = BASE_METRIC_COLS + DERIVED_FEATURE_COLS
 APP_SPAN_SERVICES = (
-    "adservice",
-    "cartservice",
     "checkoutservice",
     "currencyservice",
     "emailservice",
@@ -28,16 +26,31 @@ APP_SPAN_SERVICES = (
     "paymentservice",
     "productcatalogservice",
     "recommendationservice",
+)
+# Services that have no server-span instrumentation in Online Boutique v0.10.1:
+# - redis-cart: database without tracing
+# - shippingservice: tracing disabled upstream (Go SDK issue #422)
+# - cartservice: .NET binary in v0.10.1 has no OTLP trace exporter
+# - adservice: Java image in v0.10.1 has no OpenTelemetry javaagent attached
+APP_SPAN_ZERO_SERVICES = (
+    "adservice",
+    "cartservice",
+    "redis-cart",
     "shippingservice",
 )
-APP_SPAN_ZERO_SERVICES = ("redis-cart",)
 
 
 def application_span_selector(namespace: str, pod_name_regex: str | None = None) -> str:
-    """Build the shared PromQL selector for instrumented server spans."""
+    """Build the shared PromQL selector for instrumented server spans.
+
+    Health-check span names (Health/Check, grpc.health.*) are excluded at query
+    time as defense-in-depth; the Collector filter/health_checks processor is
+    the primary exclusion layer.
+    """
     labels = [
         f'k8s_namespace_name={json.dumps(str(namespace))}',
         'span_kind="SPAN_KIND_SERVER"',
+        'span_name!~".*Health/Check.*|grpc\\\\.health\\\\..*|_healthz"',
     ]
     if pod_name_regex:
         labels.append(f'k8s_pod_name=~{json.dumps(pod_name_regex)}')
@@ -57,11 +70,11 @@ def application_metric_queries(
     common = application_span_selector(namespace, pod_name_regex)
     total = (
         'sum by (k8s_pod_name) '
-        f'(rate(xfsci_calls_total{{{common}}}[1m]))'
+        f'(rate(xfsci_calls_total{{{common}}}[2m]))'
     )
     errors = (
         'sum by (k8s_pod_name) '
-        f'(rate(xfsci_calls_total{{{common},status_code=~"(?i).*error.*"}}[1m]))'
+        f'(rate(xfsci_calls_total{{{common},status_code=~"(?i).*error.*"}}[2m]))'
     )
     return {
         "request_rate": total,

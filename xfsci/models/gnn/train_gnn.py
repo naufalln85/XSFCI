@@ -501,6 +501,18 @@ class GNNTrainer:
             lbl_name = IDX_TO_LABEL.get(i, str(i))[:9]
             logger.info(f"{lbl_name:<10}{row_str}")
 
+        missing_test_classes = [
+            IDX_TO_LABEL.get(idx, str(idx))
+            for idx, support in enumerate(test_res["support_per_class"])
+            if int(support) == 0
+        ]
+        if missing_test_classes:
+            raise RuntimeError(
+                "Refusing to save a GNN checkpoint because the held-out test split "
+                f"has no examples for: {missing_test_classes}. Collect additional "
+                "fault sessions and use a split that keeps whole sessions isolated."
+            )
+
         # Simpan Model Checkpoint
         model_path = WEIGHTS_DIR / "gnn_best.pt"
         metrics_path = WEIGHTS_DIR / "training_metrics.json"

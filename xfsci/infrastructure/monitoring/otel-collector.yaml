@@ -48,14 +48,6 @@ data:
         check_interval: 1s
         limit_mib: 192
         spike_limit_mib: 48
-      filter/health_checks:
-        error_mode: ignore
-        traces:
-          span:
-            - 'attributes["http.target"] == "/_healthz"'
-            - 'attributes["http.route"] == "/_healthz"'
-            - 'IsMatch(name, ".*Health/Check.*")'
-            - 'IsMatch(name, "grpc\\.health\\..*")'
       k8sattributes:
         auth_type: serviceAccount
         filter:
@@ -97,7 +89,7 @@ data:
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, filter/health_checks, k8sattributes, batch]
+          processors: [memory_limiter, k8sattributes, batch]
           exporters: [span_metrics]
         metrics:
           receivers: [span_metrics]

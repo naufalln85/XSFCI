@@ -363,6 +363,14 @@ def create_graph_snapshots_from_csv(csv_path: Path,
         self_loops=True,
     )
 
+    # Deteksi session_id jika belum ada (misal digabung multi-sesi dengan jeda > 5 menit)
+    if "session_id" not in df.columns:
+        sorted_ts = df["timestamp"].sort_values()
+        gaps = sorted_ts.diff() > pd.Timedelta(minutes=5)
+        if gaps.any():
+            session_map = gaps.cumsum()
+            df["session_id"] = "session_" + session_map.astype(str)
+
     # Kelompokkan berdasarkan interval waktu (5 detik)
     # Bulatkan timestamp ke kelipatan 5 detik terdekat
     df["time_bin"] = df["timestamp"].dt.floor("5s")
@@ -401,11 +409,14 @@ def create_graph_snapshots_from_csv(csv_path: Path,
         has_anomaly = (y_vector > 0).any()
         y_graph = 1.0 if has_anomaly else 0.0
 
+        session_val = str(group["session_id"].iloc[0]) if "session_id" in group.columns else None
+
         data_obj = Data(
             x=torch.tensor(x_matrix, dtype=torch.float32),
             edge_index=edge_index.clone(),
             y=torch.tensor(y_vector, dtype=torch.long),
             y_graph=torch.tensor([y_graph], dtype=torch.float32),
+            session_id=session_val,
         )
         snapshots.append(data_obj)
 
@@ -414,7 +425,7 @@ def create_graph_snapshots_from_csv(csv_path: Path,
 
 
 # ============================================================
-# DATALOADER BUILDER DENGAN CHRONOLOGICAL SPLIT
+# DATALOADER BUILDER DENGAN SESSION-AWARE & CHRONOLOGICAL SPLIT
 # ============================================================
 
 def build_graph_dataloaders(csv_path: Optional[Path] = None,
@@ -423,8 +434,9 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
                             train_ratio: float = 0.70,
                             val_ratio: float = 0.15) -> Tuple[DataLoader, DataLoader, DataLoader, dict]:
     """
-    Membuat Train, Val, dan Test PyG DataLoaders dengan pembagian
-    secara kronologis (urutan waktu) untuk mencegah data leakage.
+    Membuat Train, Val, dan Test PyG DataLoaders.
+    Mendukung Session-Aware Split (satu sesi utuh masuk ke satu kelompok)
+    atau fallback ke Chronological Split jika hanya ada satu sesi.
     """
     base_dir = Path(__file__).resolve().parent.parent.parent
     contract_path = base_dir / "data" / "processed" / "feature_contract.json"
@@ -455,19 +467,51 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
     snapshots = create_graph_snapshots_from_csv(csv_path, topology_path=topology_path)
     total_snapshots = len(snapshots)
 
-    # Chronological Split
-    train_size = int(total_snapshots * train_ratio)
-    val_size = int(total_snapshots * val_ratio)
-    test_size = total_snapshots - train_size - val_size
+    # Deteksi apakah tersedia pemisahan berbasis sesi (Session-Aware)
+    unique_sessions = list(dict.fromkeys(
+        s.session_id for s in snapshots if getattr(s, "session_id", None) is not None
+    ))
 
-    train_data = snapshots[:train_size]
-    val_data = snapshots[train_size:train_size + val_size]
-    test_data = snapshots[train_size + val_size:]
+    if len(unique_sessions) >= 3:
+        n_train = max(1, int(len(unique_sessions) * train_ratio))
+        n_val = max(1, int(len(unique_sessions) * val_ratio))
+        if n_train + n_val >= len(unique_sessions):
+            n_train = max(1, len(unique_sessions) - 2)
+            n_val = 1
+        train_sess = set(unique_sessions[:n_train])
+        val_sess = set(unique_sessions[n_train:n_train + n_val])
+        test_sess = set(unique_sessions[n_train + n_val:])
 
-    logger.info(f"Dataset Split (Kronologis):")
-    logger.info(f"  Train : {len(train_data):>5,} graf ({len(train_data)/total_snapshots*100:4.1f}%)")
-    logger.info(f"  Val   : {len(val_data):>5,} graf ({len(val_data)/total_snapshots*100:4.1f}%)")
-    logger.info(f"  Test  : {len(test_data):>5,} graf ({len(test_data)/total_snapshots*100:4.1f}%)")
+        train_data = [s for s in snapshots if s.session_id in train_sess]
+        val_data = [s for s in snapshots if s.session_id in val_sess]
+        test_data = [s for s in snapshots if s.session_id in test_sess]
+
+        logger.info(f"Dataset Split (Session-Aware / Bebas Data Leakage):")
+        logger.info(f"  Sessions total: {len(unique_sessions)} -> Train: {list(train_sess)}, Val: {list(val_sess)}, Test: {list(test_sess)}")
+        logger.info(f"  Train : {len(train_data):>5,} graf ({len(train_data)/total_snapshots*100:4.1f}%)")
+        logger.info(f"  Val   : {len(val_data):>5,} graf ({len(val_data)/total_snapshots*100:4.1f}%)")
+        logger.info(f"  Test  : {len(test_data):>5,} graf ({len(test_data)/total_snapshots*100:4.1f}%)")
+    elif len(unique_sessions) == 2:
+        train_data = [s for s in snapshots if s.session_id == unique_sessions[0]]
+        test_data = [s for s in snapshots if s.session_id == unique_sessions[1]]
+        n_val = max(1, int(len(train_data) * val_ratio))
+        val_data = train_data[-n_val:]
+        train_data = train_data[:-n_val]
+        logger.info(f"Dataset Split (2 Sessions): Train/Val={unique_sessions[0]}, Test={unique_sessions[1]}")
+    else:
+        # Chronological Split (Single Session fallback)
+        train_size = int(total_snapshots * train_ratio)
+        val_size = int(total_snapshots * val_ratio)
+        test_size = total_snapshots - train_size - val_size
+
+        train_data = snapshots[:train_size]
+        val_data = snapshots[train_size:train_size + val_size]
+        test_data = snapshots[train_size + val_size:]
+
+        logger.info(f"Dataset Split (Kronologis - Single Session):")
+        logger.info(f"  Train : {len(train_data):>5,} graf ({len(train_data)/total_snapshots*100:4.1f}%)")
+        logger.info(f"  Val   : {len(val_data):>5,} graf ({len(val_data)/total_snapshots*100:4.1f}%)")
+        logger.info(f"  Test  : {len(test_data):>5,} graf ({len(test_data)/total_snapshots*100:4.1f}%)")
 
     train_dataset = MicroserviceGraphDataset(train_data)
     val_dataset = MicroserviceGraphDataset(val_data)

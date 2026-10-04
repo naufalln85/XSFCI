@@ -151,12 +151,6 @@ spec:
               value: "1"
             - name: COLLECTOR_SERVICE_ADDR
               value: "otel-collector:4317"
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://otel-collector:4317"
-            - name: OTEL_EXPORTER_OTLP_INSECURE
-              value: "true"
-            - name: OTEL_SERVICE_NAME
-              value: "cartservice"
             - name: REDIS_ADDR
               value: "redis-cart:6379"
           resources:
@@ -652,12 +646,6 @@ spec:
               value: "1"
             - name: COLLECTOR_SERVICE_ADDR
               value: "otel-collector:4317"
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://otel-collector:4317"
-            - name: OTEL_EXPORTER_OTLP_INSECURE
-              value: "true"
-            - name: OTEL_SERVICE_NAME
-              value: "adservice"
             - name: PORT
               value: "9555"
           resources:

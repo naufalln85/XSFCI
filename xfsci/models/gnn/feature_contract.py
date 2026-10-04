@@ -28,16 +28,23 @@ APP_SPAN_SERVICES = (
     "paymentservice",
     "productcatalogservice",
     "recommendationservice",
-    "shippingservice",
 )
-APP_SPAN_ZERO_SERVICES = ("redis-cart",)
+# Services that are expected to produce zero trace-derived metrics.
+# shippingservice: upstream Go SDK has tracing disabled (issue #422).
+APP_SPAN_ZERO_SERVICES = ("redis-cart", "shippingservice")
 
 
 def application_span_selector(namespace: str, pod_name_regex: str | None = None) -> str:
-    """Build the shared PromQL selector for instrumented server spans."""
+    """Build the shared PromQL selector for instrumented server spans.
+
+    Health-check span names (Health/Check, grpc.health.*) are excluded at query
+    time as defense-in-depth; the Collector filter/health_checks processor is
+    the primary exclusion layer.
+    """
     labels = [
         f'k8s_namespace_name={json.dumps(str(namespace))}',
         'span_kind="SPAN_KIND_SERVER"',
+        'span_name!~".*Health/Check.*|grpc\\\\.health\\\\..*|_healthz"',
     ]
     if pod_name_regex:
         labels.append(f'k8s_pod_name=~{json.dumps(pod_name_regex)}')

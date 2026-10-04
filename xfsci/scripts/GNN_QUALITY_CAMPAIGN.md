@@ -10,12 +10,13 @@ take more than 7.5 hours.
 
 ## Before the run
 
-1. Publish/merge these repository changes to the branch used by the VM. Do not
-   expect `git pull` to fetch uncommitted local changes.
-2. Reconcile the VM checkout first: the development checkout that contains
-   this campaign currently declares pipeline version `xfsci-gnn-21f-online-v3`,
-   while the VM output shared for this task declared v4. Do not pull this
-   checkout over the VM until the branch/version difference has been resolved.
+1. Publish commit `566793f` to the branch used by the VM before running
+   `git pull`; it restores the v4 contract that matches the processed data and
+   checkpoint. Do not expect `git pull` to fetch uncommitted local changes.
+2. After pulling, verify that the code and `data/processed/feature_contract.json`
+   both report `xfsci-gnn-21f-online-v4`. The campaign repeats this check and
+   stops before collection if they differ. Keep the existing v4 scaler and
+   checkpoint; do not retrain on the same split just to resolve this mismatch.
 3. Stop the XFSCI orchestrator and any other metrics scraper. The campaign
    checks for these processes and refuses to start if it finds one.
 4. Confirm the current Kubernetes context is the intended test cluster and

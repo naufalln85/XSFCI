@@ -70,11 +70,11 @@ def application_metric_queries(
     common = application_span_selector(namespace, pod_name_regex)
     total = (
         'sum by (k8s_pod_name) '
-        f'(rate(xfsci_calls_total{{{common}}}[1m]))'
+        f'(rate(xfsci_calls_total{{{common}}}[2m]))'
     )
     errors = (
         'sum by (k8s_pod_name) '
-        f'(rate(xfsci_calls_total{{{common},status_code=~"(?i).*error.*"}}[1m]))'
+        f'(rate(xfsci_calls_total{{{common},status_code=~"(?i).*error.*"}}[2m]))'
     )
     return {
         "request_rate": total,

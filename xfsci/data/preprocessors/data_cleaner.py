@@ -31,6 +31,7 @@ PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 # Pod sistem yang harus difilter keluar
 SYSTEM_POD_PREFIXES = [
     "prometheus", "grafana", "loki", "promtail",
+    "otel-collector",
     "alertmanager", "kube-proxy", "coredns",
     "local-path", "flannel", "metrics-server",
     "fault-cpu", "fault-memory", "fault-network", "fault-pod",
@@ -131,7 +132,8 @@ class XFSCIDataCleaner:
         df["net_rx_bytes"] = df["net_rx_bytes"].clip(0, 1e9)
         df["net_tx_bytes"] = df["net_tx_bytes"].clip(0, 1e9)
         df["request_rate"] = df["request_rate"].clip(0, 1e6)
-        df["error_rate"] = df["error_rate"].clip(0, 100)
+        # Feature contract v4 defines error_rate as a fraction in [0, 1].
+        df["error_rate"] = df["error_rate"].clip(0, 1)
         df["pod_restarts"] = df["pod_restarts"].clip(0, 100)
         return df
 

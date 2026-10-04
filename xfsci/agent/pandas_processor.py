@@ -439,10 +439,12 @@ class PandasMetricProcessor:
             for metric_name in app_metric_names.intersection(raw.columns):
                 if raw[metric_name].isna().any():
                     status["degraded_features"].append(metric_name)
+                    # Idle intervals with verified instrumentation have 0 request volume / errors
+                    raw[metric_name] = raw[metric_name].fillna(0.0)
 
             raw.sort_values(["pod_name", "timestamp"], inplace=True)
             for metric_name in BASE_METRIC_COLS:
-                if metric_name in optional_zero_metrics:
+                if metric_name in optional_zero_metrics or metric_name in app_metric_names:
                     continue
                 raw[metric_name] = raw.groupby("pod_name", sort=False)[metric_name].ffill(limit=1)
 
@@ -772,34 +774,6 @@ class PandasMetricProcessor:
             namespace=self.target_namespace,
             **cpu,
             **memory,
-            **pod,
-            **network,
-        )
-    
-    def generate_situation_summary(self, metrics: PandasMetrics) -> str:
-        """
-        Generate ringkasan situasi dalam teks — DARI ANGKA PANDAS,
-        bukan dari LLM. Ini dipakai sebagai konteks tambahan untuk AI Agent.
-        """
-        anomaly = self.detect_anomaly_pattern(metrics.model_dump())
-        
-        lines = [
-            f"📊 Situation Report for {metrics.target_pod}",
-            f"  Time: {metrics.timestamp.isoformat()}",
-            f"  Node: {metrics.target_node}",
-            f"  Anomaly: {anomaly.value}",
-            f"",
-            f"  CPU:    {metrics.cpu_usage_avg_5m:.1f}% (5m avg), {metrics.cpu_usage_avg_15m:.1f}% (15m avg)",
-            f"  Memory: {metrics.memory_usage_mb:.1f} MB ({metrics.memory_usage_percent:.1f}%)",
-            f"  Mem Growth: {metrics.memory_growth_rate_mb_per_min:+.1f} MB/min",
-            f"  Restarts: {metrics.pod_restarts_1h} (last 1h)",
-            f"  Replicas: {metrics.current_replicas}",
-            f"  RPS:    {metrics.request_rate_rps:.1f}",
-            f"  Errors: {metrics.error_rate_percent:.1f}%",
-            f"  Latency P50/P99: {metrics.latency_p50_ms:.0f}ms / {metrics.latency_p99_ms:.0f}ms",
-        ]
-        
-        return "\n".join(lines)
             **pod,
             **network,
         )

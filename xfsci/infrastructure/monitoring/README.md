@@ -41,13 +41,17 @@ Prometheus scrape targets.
 
 ## Model compatibility
 
-`error_rate` now means the fraction of server spans with OpenTelemetry status
-`Error`; it is not the former HTTP 4xx/5xx ratio. The feature pipeline version
-is therefore `xfsci-gnn-21f-online-v3`. Recollect and label training data with
-this telemetry source, regenerate the feature contract and scaler, and retrain
-the GNN before enabling inference. The previous v2 checkpoint is intentionally
-rejected by the feature contract guard.
+`error_rate` means the fraction of server spans with OpenTelemetry status
+`Error`; it is not the former HTTP 4xx/5xx ratio. The feature contract also uses
+a two-minute request-rate window and records four services without server-span
+instrumentation as explicit zero-valued trace features. These semantics are
+versioned as `xfsci-gnn-21f-online-v4`. Recollect and label training data,
+regenerate the feature contract and scaler, and retrain the GNN before enabling
+inference. The feature-version guard rejects v3 checkpoints and preprocessing
+artifacts.
 
-`redis-cart` has no server-span instrumentation in this deployment and is
-explicitly assigned zero for these two application-span features. Its resource
-metrics remain collected normally.
+`adservice`, `cartservice`, `redis-cart`, and `shippingservice` currently have no
+server-span instrumentation in this Online Boutique v0.10.1 deployment. Their
+`request_rate` and `error_rate` trace features are set to zero by policy; this
+means telemetry is unavailable for those services, not that measured traffic
+or errors are zero. Resource metrics for these pods are still collected.

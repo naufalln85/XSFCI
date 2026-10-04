@@ -3,7 +3,7 @@
 import json
 
 
-FEATURE_PIPELINE_VERSION = "xfsci-gnn-21f-online-v3"
+FEATURE_PIPELINE_VERSION = "xfsci-gnn-21f-online-v4"
 
 BASE_METRIC_COLS = [
     "cpu_usage", "memory_usage", "memory_usage_percent", "pod_restarts",

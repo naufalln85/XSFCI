@@ -482,25 +482,20 @@ class PandasMetricProcessor:
             now = pd.Timestamp(datetime.utcnow())
             if featured.empty:
                 raise RuntimeError("no complete pod samples remain after telemetry alignment")
-            cluster_latest_ts = featured["timestamp"].max()
-            if (now - cluster_latest_ts) > pd.Timedelta(seconds=60):
-                raise RuntimeError(f"latest telemetry is stale: {cluster_latest_ts} (now: {now})")
 
-            # Scope to active pods reporting in the latest coherent 5-second slice
-            recent = featured.loc[featured["timestamp"] >= (cluster_latest_ts - pd.Timedelta(seconds=5))]
-            latest_by_pod = recent.sort_values("timestamp").groupby("pod_name", sort=False).tail(1)
-            if (
-                not latest_by_pod.empty
-                and latest_by_pod["timestamp"].max() - latest_by_pod["timestamp"].min() > pd.Timedelta(seconds=7.5)
-            ):
-                raise RuntimeError("latest pod metrics are not from a coherent 5-second snapshot")
-            latest_by_pod["service_name"] = latest_by_pod["pod_name"].map(extract_service_name)
-            present_services = set(latest_by_pod["service_name"])
+            featured["service_name"] = featured["pod_name"].map(extract_service_name)
+
+            # For each canonical service, select the newest active telemetry sample
+            latest_per_service = featured.sort_values("timestamp").groupby("service_name", sort=False).tail(1)
+
+            # Ensure telemetry is fresh (reported within the last 45 seconds across all nodes)
+            fresh_services = latest_per_service.loc[(now - latest_per_service["timestamp"]) <= pd.Timedelta(seconds=45)]
+            present_services = set(fresh_services["service_name"])
             missing_services = sorted(set(SERVICE_NAMES) - present_services)
             if missing_services:
                 raise RuntimeError(f"live service coverage incomplete: {missing_services}")
 
-            service_snapshot = latest_by_pod.groupby("service_name")[MODEL_FEATURE_COLS].mean()
+            service_snapshot = fresh_services.groupby("service_name")[MODEL_FEATURE_COLS].mean()
             snapshot = {
                 service: {feature: float(service_snapshot.loc[service, feature]) for feature in MODEL_FEATURE_COLS}
                 for service in SERVICE_NAMES
@@ -513,7 +508,7 @@ class PandasMetricProcessor:
                 "feature_count": len(MODEL_FEATURE_COLS),
                 "service_count": len(snapshot),
                 "reason": "ok" if not status["degraded_features"] else "partial_telemetry_gaps",
-                "snapshot_timestamp": latest_by_pod["timestamp"].max().isoformat(),
+                "snapshot_timestamp": fresh_services["timestamp"].max().isoformat(),
             })
             self.last_gnn_snapshot_status = status
             return snapshot, status

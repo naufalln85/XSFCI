@@ -312,8 +312,10 @@ def collect_session(
         fault_file = fault_log.open("w", encoding="utf-8")
         fault_file.write(f"START_UTC={utc_now()}\nSESSION_ID={session_id}\n")
         fault_file.flush()
+        session_env = env.copy()
+        session_env["XFSCI_SESSION_ID"] = session_id
         fault = subprocess.Popen(
-            ["bash", str(FAULT_RUNNER)], cwd=ROOT, env=env,
+            ["bash", str(FAULT_RUNNER)], cwd=ROOT, env=session_env,
             stdout=fault_file, stderr=subprocess.STDOUT,
         )
         fault_file.close()
@@ -459,6 +461,8 @@ def main() -> int:
     parser.add_argument("--min-cluster-accuracy", type=float, default=0.99)
     parser.add_argument("--min-top3-accuracy", type=float, default=0.98)
     parser.add_argument("--min-fault-macro-f1", type=float, default=0.80)
+    parser.add_argument("--resume-campaign", type=str, default=None,
+                        help="Resume an existing campaign ID by reusing already collected sessions")
     args = parser.parse_args()
 
     if args.scrape_minutes < 63:
@@ -470,28 +474,61 @@ def main() -> int:
     if not 0.0 <= args.min_fault_macro_f1 <= 1.0:
         parser.error("min-fault-macro-f1 must be between 0 and 1")
 
-    campaign_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    campaign_dir = ROOT / "artifacts" / "gnn_quality_campaigns" / campaign_id
-    campaign_dir.mkdir(parents=True, exist_ok=False)
+    if args.resume_campaign:
+        campaign_id = args.resume_campaign
+        campaign_dir = ROOT / "artifacts" / "gnn_quality_campaigns" / campaign_id
+        if not campaign_dir.exists():
+            raise FileNotFoundError(f"Campaign directory does not exist: {campaign_dir}")
+        summary_path = campaign_dir / "campaign_summary.json"
+        summary = {}
+        if summary_path.exists():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                summary = {}
+        if not summary:
+            summary = {
+                "campaign_id": campaign_id,
+                "started_utc": utc_now(),
+                "namespace": "demo",
+                "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
+                "max_sessions": args.max_sessions,
+                "min_test_sessions": args.min_test_sessions,
+                "thresholds": {
+                    "min_test_support": args.min_test_support,
+                    "min_cluster_accuracy": args.min_cluster_accuracy,
+                    "min_top3_rca_accuracy": args.min_top3_accuracy,
+                    "min_fault_macro_f1": args.min_fault_macro_f1,
+                },
+                "sessions": [],
+                "status": "running",
+            }
+        summary["status"] = "running"
+        save_summary(campaign_dir, summary)
+    else:
+        campaign_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        campaign_dir = ROOT / "artifacts" / "gnn_quality_campaigns" / campaign_id
+        campaign_dir.mkdir(parents=True, exist_ok=False)
+        summary = {
+            "campaign_id": campaign_id,
+            "started_utc": utc_now(),
+            "namespace": "demo",
+            "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
+            "max_sessions": args.max_sessions,
+            "min_test_sessions": args.min_test_sessions,
+            "thresholds": {
+                "min_test_support": args.min_test_support,
+                "min_cluster_accuracy": args.min_cluster_accuracy,
+                "min_top3_rca_accuracy": args.min_top3_accuracy,
+                "min_fault_macro_f1": args.min_fault_macro_f1,
+            },
+            "sessions": [],
+            "status": "running",
+        }
+        save_summary(campaign_dir, summary)
+
     env = os.environ.copy()
     env.update({"TARGET_NAMESPACE": "demo", "TZ": "UTC", "PYTHONUNBUFFERED": "1"})
-    summary = {
-        "campaign_id": campaign_id,
-        "started_utc": utc_now(),
-        "namespace": "demo",
-        "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
-        "max_sessions": args.max_sessions,
-        "min_test_sessions": args.min_test_sessions,
-        "thresholds": {
-            "min_test_support": args.min_test_support,
-            "min_cluster_accuracy": args.min_cluster_accuracy,
-            "min_top3_rca_accuracy": args.min_top3_accuracy,
-            "min_fault_macro_f1": args.min_fault_macro_f1,
-        },
-        "sessions": [],
-        "status": "running",
-    }
-    save_summary(campaign_dir, summary)
 
     say(f"Campaign {campaign_id}; logs/artifacts: {campaign_dir}")
     say("Each session runs the bounded standard injector (~56 minutes), one scraper, and at most the configured checkout count.")
@@ -523,38 +560,81 @@ def main() -> int:
         for index in range(1, args.max_sessions + 1):
             session_id = f"{campaign_id}_s{index:02d}"
             session_dir = campaign_dir / session_id
-            session_dir.mkdir(parents=True, exist_ok=False)
+            session_dir.mkdir(parents=True, exist_ok=True)
             say(f"========== SESSION {index}/{args.max_sessions}: {session_id} ==========")
-            raw_csv, fault_log = collect_session(index, session_id, session_dir, args, env)
-            collected_raw.append(raw_csv)
-            fault_logs.append(fault_log)
 
-            labeled_csv = session_dir / f"labeled_{session_id}.csv"
-            rc = run_logged(
-                [sys.executable, str(LABELER), "--input", str(raw_csv), "--output", str(labeled_csv),
-                 "--fault-log", str(fault_log), "--session-id", session_id],
-                session_dir / "labeler.log", env,
-            )
-            if rc:
-                raise RuntimeError(f"Labeling failed for {session_id}; inspect {session_dir / 'labeler.log'}")
+            existing_cleaned = session_dir / f"cleaned_{session_id}.csv"
+            existing_raw = sorted(session_dir.glob("metrics_*.csv"), key=lambda p: p.stat().st_mtime)
+            existing_fault = session_dir / "faults.log"
 
-            cleaned_csv = session_dir / f"cleaned_{session_id}.csv"
-            rc = run_logged(
-                [sys.executable, str(CLEANER), "--input", str(labeled_csv), "--output", str(cleaned_csv)],
-                session_dir / "cleaner.log", env,
-            )
-            if rc:
-                raise RuntimeError(f"Cleaning failed for {session_id}; inspect {session_dir / 'cleaner.log'}")
-            cleaned_files.append(cleaned_csv)
+            if existing_cleaned.exists() and existing_cleaned.stat().st_size > 0:
+                raw_csv = existing_raw[-1] if existing_raw else session_dir / "metrics.csv"
+                fault_log = existing_fault
+                cleaned_csv = existing_cleaned
+                say(f"Session {session_id}: reusing existing cleaned dataset {cleaned_csv.name}")
+                collected_raw.append(raw_csv)
+                fault_logs.append(fault_log)
+                cleaned_files.append(cleaned_csv)
+            elif existing_raw and existing_fault.exists() and existing_fault.stat().st_size > 0:
+                raw_csv = existing_raw[-1]
+                fault_log = existing_fault
+                say(f"Session {session_id}: reusing existing raw telemetry {raw_csv.name} and fault log")
+                collected_raw.append(raw_csv)
+                fault_logs.append(fault_log)
+                labeled_csv = session_dir / f"labeled_{session_id}.csv"
+                rc = run_logged(
+                    [sys.executable, str(LABELER), "--input", str(raw_csv), "--output", str(labeled_csv),
+                     "--fault-log", str(fault_log), "--session-id", session_id],
+                    session_dir / "labeler.log", env,
+                )
+                if rc:
+                    raise RuntimeError(f"Labeling failed for {session_id}; inspect {session_dir / 'labeler.log'}")
+
+                cleaned_csv = session_dir / f"cleaned_{session_id}.csv"
+                rc = run_logged(
+                    [sys.executable, str(CLEANER), "--input", str(labeled_csv), "--output", str(cleaned_csv)],
+                    session_dir / "cleaner.log", env,
+                )
+                if rc:
+                    raise RuntimeError(f"Cleaning failed for {session_id}; inspect {session_dir / 'cleaner.log'}")
+                cleaned_files.append(cleaned_csv)
+            else:
+                raw_csv, fault_log = collect_session(index, session_id, session_dir, args, env)
+                collected_raw.append(raw_csv)
+                fault_logs.append(fault_log)
+
+                labeled_csv = session_dir / f"labeled_{session_id}.csv"
+                rc = run_logged(
+                    [sys.executable, str(LABELER), "--input", str(raw_csv), "--output", str(labeled_csv),
+                     "--fault-log", str(fault_log), "--session-id", session_id],
+                    session_dir / "labeler.log", env,
+                )
+                if rc:
+                    raise RuntimeError(f"Labeling failed for {session_id}; inspect {session_dir / 'labeler.log'}")
+
+                cleaned_csv = session_dir / f"cleaned_{session_id}.csv"
+                rc = run_logged(
+                    [sys.executable, str(CLEANER), "--input", str(labeled_csv), "--output", str(cleaned_csv)],
+                    session_dir / "cleaner.log", env,
+                )
+                if rc:
+                    raise RuntimeError(f"Cleaning failed for {session_id}; inspect {session_dir / 'cleaner.log'}")
+                cleaned_files.append(cleaned_csv)
+
             session_record = {
                 "session_id": session_id,
                 "raw_csv": str(raw_csv),
                 "fault_log": str(fault_log),
-                "labeled_csv": str(labeled_csv),
+                "labeled_csv": str(session_dir / f"labeled_{session_id}.csv"),
                 "cleaned_csv": str(cleaned_csv),
                 "finished_utc": utc_now(),
             }
-            summary["sessions"].append(session_record)
+            for i, r in enumerate(summary["sessions"]):
+                if r.get("session_id") == session_id:
+                    summary["sessions"][i] = session_record
+                    break
+            else:
+                summary["sessions"].append(session_record)
             save_summary(campaign_dir, summary)
 
             if len(cleaned_files) < 3:

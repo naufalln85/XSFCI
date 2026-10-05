@@ -234,10 +234,15 @@ def windows_from_fault_log(log_path: Path, expected_session_id: str = None) -> d
                 continue
             item = match.groupdict()
             if expected_session_id and item["session"] != expected_session_id:
-                raise ValueError(
-                    f"Fault log session {item['session']!r} does not match "
-                    f"--session-id {expected_session_id!r}"
-                )
+                if item["session"] == "manual":
+                    logger.warning(
+                        f"Fault log session is 'manual' (default); accepting for {expected_session_id}"
+                    )
+                else:
+                    raise ValueError(
+                        f"Fault log session {item['session']!r} does not match "
+                        f"--session-id {expected_session_id!r}"
+                    )
             fault = item["fault"]
             events.setdefault(fault, {})[item["phase"]] = {
                 "time": pd.to_datetime(item["timestamp"], utc=True).tz_localize(None),

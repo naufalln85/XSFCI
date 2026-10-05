@@ -487,8 +487,8 @@ class PandasMetricProcessor:
             featured["service_name"] = featured["pod_name"].map(extract_service_name)
 
             # In multi-site clusters (Jakarta, Bandung, Surabaya), Prometheus scrapes
-            # node cAdvisors asynchronously every ~15s. Accept any active sample within 35s.
-            recent = featured.loc[(now - featured["timestamp"]) <= pd.Timedelta(seconds=35)]
+            # node cAdvisors asynchronously every ~15s. Accept any active sample within 60s.
+            recent = featured.loc[(now - featured["timestamp"]) <= pd.Timedelta(seconds=60)]
             if recent.empty:
                 cluster_latest_ts = featured["timestamp"].max()
                 raise RuntimeError(f"telemetry is stale (latest: {cluster_latest_ts}, now: {now})")

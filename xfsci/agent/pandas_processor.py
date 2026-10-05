@@ -480,8 +480,15 @@ class PandasMetricProcessor:
             featured = engineer.add_anomaly_score(featured)
 
             now = pd.Timestamp(datetime.utcnow())
-            latest_by_pod = featured.sort_values("timestamp").groupby("pod_name", sort=False).tail(1)
-            latest_by_pod = latest_by_pod.loc[(now - latest_by_pod["timestamp"]) <= pd.Timedelta(seconds=20)]
+            if featured.empty:
+                raise RuntimeError("no complete pod samples remain after telemetry alignment")
+            cluster_latest_ts = featured["timestamp"].max()
+            if (now - cluster_latest_ts) > pd.Timedelta(seconds=60):
+                raise RuntimeError(f"latest telemetry is stale: {cluster_latest_ts} (now: {now})")
+
+            # Scope to active pods reporting in the latest coherent 5-second slice
+            recent = featured.loc[featured["timestamp"] >= (cluster_latest_ts - pd.Timedelta(seconds=5))]
+            latest_by_pod = recent.sort_values("timestamp").groupby("pod_name", sort=False).tail(1)
             if (
                 not latest_by_pod.empty
                 and latest_by_pod["timestamp"].max() - latest_by_pod["timestamp"].min() > pd.Timedelta(seconds=7.5)

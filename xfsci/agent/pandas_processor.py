@@ -513,7 +513,7 @@ class PandasMetricProcessor:
                 "feature_count": len(MODEL_FEATURE_COLS),
                 "service_count": len(snapshot),
                 "reason": "ok" if not status["degraded_features"] else "partial_telemetry_gaps",
-                "snapshot_timestamp": latest_by_pod["timestamp"].max().isoformat(),
+                "snapshot_timestamp": latest_by_service["timestamp"].max().isoformat(),
             })
             self.last_gnn_snapshot_status = status
             return snapshot, status

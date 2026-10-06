@@ -266,34 +266,10 @@ class GNNTrainer:
                 all_graph_preds.extend(g_preds)
                 all_graph_targets.extend(g_targets)
 
-                # Hierarchical Cluster-to-Node Gating & Physical Guardrails V2:
-                # 1. Jika kluster dinyatakan SEHAT oleh global head (g_probs < 0.50),
-                #    maka seluruh pod pada snapshot tersebut dipastikan NORMAL (0).
-                # 2. Jika kluster anomali, terapkan sanity guardrails pada node individual:
-                #    - FAULT_POD_CRASH (3): mustahil jika restart_delta == 0 dan pod_restarts == 0
-                #    - FAULT_CPU_STRESS (1): mustahil jika cpu_usage_norm < 0.05 (sangat dingin/idle)
-                #    - FAULT_MEMORY_LEAK (2): mustahil jika memory_slope_12 <= 0 (memory tidak naik)
-                #    - FAULT_NETWORK_LATENCY (4): mustahil jika net_asymmetry < 0.03 (traffic simetris)
-                batch_x_np = batch.x.cpu().numpy()
-                num_graphs_in_batch = len(g_targets)
-                for b in range(num_graphs_in_batch):
-                    start_node = b * NUM_SERVICES
-                    end_node = start_node + NUM_SERVICES
-                    if g_probs[b] < 0.50:
-                        preds[start_node:end_node] = 0
-                    else:
-                        for n in range(start_node, end_node):
-                            p = preds[n]
-                            if p == 3 and batch_x_np[n, IDX_POD_RESTARTS] == 0 and batch_x_np[n, IDX_RESTART_DELTA] == 0:
-                                preds[n] = 0
-                            elif p == 1 and batch_x_np[n, IDX_CPU_USAGE] < 0.05:
-                                preds[n] = 0
-                            elif p == 2 and batch_x_np[n, IDX_MEMORY_SLOPE] <= 0.01:
-                                # Memory leak memerlukan slope positif (memory harus sedang naik)
-                                preds[n] = 0
-                            elif p == 4 and batch_x_np[n, IDX_NET_ASYMMETRY] < 0.03:
-                                # Network latency memerlukan traffic yang tidak simetris
-                                preds[n] = 0
+                # Native Data-Driven GNN Predictions (USENIX ATC '22 / KDD Benchmark Standard):
+                # Node classifier menggabungkan GATv2 node embeddings dengan residual feature bypass.
+                # Prediksi node dievaluasi secara murni (end-to-end argmax) tanpa hardcoded override
+                # yang mendistorsi deteksi anomali pada pod yang di-recreate oleh Kubernetes.
 
                 all_preds.extend(preds)
                 all_targets.extend(targets)

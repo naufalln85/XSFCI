@@ -154,8 +154,9 @@ inject_crash_loop() {
     # Setiap 10 detik, bunuh PID 1 agar pod restart
     local iterations=$((dur / 10))
     for i in $(seq 1 "$iterations"); do
-        echo -e "${RED}   💀 Kill attempt ${i}/${iterations}...${NC}"
-        kubectl exec -n "$ns" "$pod" -- kill 1 2>/dev/null || true
+        echo -e "${RED}   💀 Kill attempt ${i}/${iterations} on ${pod}...${NC}"
+        kubectl exec -n "$ns" "$pod" -- sh -c "kill -9 1" 2>/dev/null || \
+        kubectl delete pod "$pod" -n "$ns" --force --grace-period=0 2>/dev/null || true
         sleep 10
         # Refresh pod name karena setelah restart nama bisa berubah
         pod=$(find_pod "$DEPLOYMENT" "$ns")

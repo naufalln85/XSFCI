@@ -499,9 +499,12 @@ class PandasMetricProcessor:
 
             raw.sort_values(["pod_name", "timestamp"], inplace=True)
             for metric_name in BASE_METRIC_COLS:
-                if metric_name in optional_zero_metrics or metric_name in app_metric_names:
+                if metric_name == "service_ready_ratio":
                     continue
-                raw[metric_name] = raw.groupby("pod_name", sort=False)[metric_name].ffill(limit=1)
+                raw[metric_name] = raw.groupby("pod_name", sort=False)[metric_name].ffill()
+                raw[metric_name] = raw.groupby("pod_name", sort=False)[metric_name].bfill()
+                if metric_name in optional_zero_metrics or metric_name in app_metric_names:
+                    raw[metric_name] = raw[metric_name].fillna(0.0)
 
             valid_service = raw["pod_name"].map(extract_service_name).isin(SERVICE_NAMES)
             raw = raw.loc[valid_service].copy()

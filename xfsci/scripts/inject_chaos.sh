@@ -244,11 +244,11 @@ echo ""
 
 # Dispatch chaos
 case "$CHAOS_TYPE" in
-    memory_leak)  inject_memory_leak "$POD" "$NAMESPACE" "$DURATION" ;;
-    cpu_stress)   inject_cpu_stress "$POD" "$NAMESPACE" "$DURATION" ;;
-    crash_loop)   inject_crash_loop "$POD" "$NAMESPACE" "$DURATION" ;;
-    latency)      inject_latency "$POD" "$NAMESPACE" "$DURATION" ;;
-    cleanup)      cleanup_chaos "$DEPLOYMENT" "$NAMESPACE" ;;
+    memory_leak|mem)            inject_memory_leak "$POD" "$NAMESPACE" "$DURATION" ;;
+    cpu_stress|cpu)             inject_cpu_stress "$POD" "$NAMESPACE" "$DURATION" ;;
+    crash_loop|pod_crash|crash) inject_crash_loop "$POD" "$NAMESPACE" "$DURATION" ;;
+    latency|network_latency)    inject_latency "$POD" "$NAMESPACE" "$DURATION" ;;
+    cleanup)                    cleanup_chaos "$DEPLOYMENT" "$NAMESPACE" ;;
     *)
         echo -e "${RED}❌ Tipe gangguan tidak dikenal: ${CHAOS_TYPE}${NC}"
         usage

@@ -168,7 +168,7 @@ ai_agent:
     fallback_model: "gemini-3.8-flash-high"      # Fallback: Gemini 3.8 Flash (High) — Cepat & handal
     sandbox_mode: true                           # Enforce execution inside protected sandbox
     allowed_commands: []              # LLM tidak mendapat akses shell; orchestrator memakai Kubernetes API
-    timeout_seconds: 90
+    timeout_seconds: 150
     retry_attempts: 2
 
 

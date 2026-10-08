@@ -168,6 +168,7 @@ class XFSCIDataLabeler:
                 )
                 event_rows = df.loc[event_mask]
                 observed = pd.Series(False, index=df.index)
+                confirmed_mask = pd.Series(False, index=df.index)
                 if not event_rows.empty:
                     observed.loc[event_rows.index] = False
                     if "service_ready_ratio" in df:

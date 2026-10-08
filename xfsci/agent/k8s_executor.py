@@ -162,18 +162,21 @@ class K8sExecutor:
                     "events": [],
                 }
                 for status in (pod.status.container_statuses or []):
-                    state = status.state
-                    terminated = (state.last_state.terminated if state and state.last_state else None)
-                    waiting = state.waiting if state else None
+                    state = getattr(status, "state", None)
+                    last_state = getattr(status, "last_state", None)
+                    terminated = getattr(state, "terminated", None) if state else None
+                    if not terminated and last_state:
+                        terminated = getattr(last_state, "terminated", None)
+                    waiting = getattr(state, "waiting", None) if state else None
                     container = {
-                        "name": status.name,
-                        "ready": status.ready,
-                        "restart_count": status.restart_count,
-                        "waiting_reason": waiting.reason if waiting else None,
-                        "waiting_message": self._redact_log_text(waiting.message or "", 500) if waiting else None,
-                        "last_termination_reason": terminated.reason if terminated else None,
-                        "last_exit_code": terminated.exit_code if terminated else None,
-                        "last_finished_at": str(terminated.finished_at) if terminated and terminated.finished_at else None,
+                        "name": getattr(status, "name", ""),
+                        "ready": getattr(status, "ready", False),
+                        "restart_count": getattr(status, "restart_count", 0),
+                        "waiting_reason": getattr(waiting, "reason", None) if waiting else None,
+                        "waiting_message": self._redact_log_text(getattr(waiting, "message", "") or "", 500) if waiting else None,
+                        "last_termination_reason": getattr(terminated, "reason", None) if terminated else None,
+                        "last_exit_code": getattr(terminated, "exit_code", None) if terminated else None,
+                        "last_finished_at": str(getattr(terminated, "finished_at", None)) if terminated and getattr(terminated, "finished_at", None) else None,
                     }
                     try:
                         current_log = self.core_v1.read_namespaced_pod_log(
@@ -252,8 +255,9 @@ class K8sExecutor:
             evidence["diagnosis_summary"] = summary
             return evidence
         except Exception as exc:
+            logger.warning(f"Failed to collect K8s incident evidence: {type(exc).__name__} - {exc}")
             evidence["error"] = type(exc).__name__
-            evidence["diagnosis_summary"] = "Gagal membaca bukti Kubernetes; tindakan otomatis berbasis diagnosis diblokir."
+            evidence["diagnosis_summary"] = f"Gagal membaca bukti Kubernetes ({type(exc).__name__}: {exc}); tindakan otomatis berbasis diagnosis diblokir."
             return evidence
 
     # ──────────────────────────────────────────────────────

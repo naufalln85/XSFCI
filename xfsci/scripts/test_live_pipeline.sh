@@ -114,8 +114,8 @@ if [[ -n "$CHAOS_TYPE" ]]; then
     echo ""
     bash "${SCRIPT_DIR}/inject_chaos.sh" "$CHAOS_TYPE" "$DEPLOYMENT" "$NAMESPACE" "$CHAOS_DURATION"
     echo ""
-    echo -e "${CYAN}   ⏳ Menunggu 15 detik agar metrik Prometheus terupdate...${NC}"
-    sleep 15
+    echo -e "${CYAN}   ⏳ Menunggu 20 detik agar metrik Prometheus terupdate...${NC}"
+    sleep 20
     echo ""
 else
     echo -e "${CYAN}[4/5] ⏭️ Chaos injection dilewati (gunakan --chaos <tipe> untuk mengaktifkan)${NC}"

@@ -164,8 +164,8 @@ ai_agent:
   # Slug model diambil PERSIS dari output `agy models` di VM5
   antigravity:
     enabled: true
-    model_priority: "claude-opus-4-6-thinking"   # Prioritas: Claude Opus 4.6 (Thinking) — Deep SRE Reasoning
-    fallback_model: "gemini-3.8-flash-high"      # Fallback: Gemini 3.8 Flash (High) — Cepat & handal
+    model_priority: "gemini-3.8-flash-high"      # Prioritas: Gemini 3.8 Flash (High) — Respons cepat (~30s), cerdas & stabil
+    fallback_model: "gemini-3.8-pro-high"        # Fallback: Gemini 3.8 Pro (High) — Deep SRE Reasoning
     sandbox_mode: true                           # Enforce execution inside protected sandbox
     allowed_commands: []              # LLM tidak mendapat akses shell; orchestrator memakai Kubernetes API
     timeout_seconds: 150

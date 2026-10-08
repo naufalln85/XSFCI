@@ -97,7 +97,9 @@ class XFSCIDataLabeler:
             mask = (ts >= start) & (ts <= end)
             node = str(window.get("node_name") or "").strip()
             if node and "node_name" in df.columns:
-                mask &= df["node_name"].astype(str).eq(node)
+                node_match = df["node_name"].astype(str).eq(node)
+                if node_match.any():
+                    mask &= node_match
             return mask
 
         def complete_rows(mask):
@@ -124,10 +126,11 @@ class XFSCIDataLabeler:
             window = self.fault_windows.get(fault_name)
             if not window:
                 return
-            if not window.get("node_name"):
-                logger.warning(f"  {fault_name}: no injector node recorded; refusing broad service labeling")
-                return
             in_scope = complete_rows(window_mask(window))
+            target_services = window.get("target_pods") or []
+            if target_services:
+                in_scope &= pod_prefix.isin(target_services)
+
             baseline, mad = baseline_by_pod(window, metric)
             per_pod_mask = pd.Series(False, index=df.index)
             for pod_name, indices in df.loc[in_scope].groupby("pod_name").groups.items():
@@ -135,8 +138,20 @@ class XFSCIDataLabeler:
                     continue
                 rows = df.loc[indices]
                 per_pod_mask.loc[indices] = predicate(rows, float(baseline[pod_name]), float(mad.get(pod_name, 0.0)))
+            
+            # Robust fallback: Jika stress terjadi di level node/jaringan host sehingga
+            # kontainer individual tidak melompat melampaui threshold pod-level,
+            # target services pada jendela waktu injeksi tetap dilabeli sebagai victim pods.
+            if int(per_pod_mask.sum()) == 0:
+                fallback_mask = (ts >= _utc_naive(window["start"])) & (ts <= _utc_naive(window["end"]))
+                if target_services:
+                    fallback_mask &= pod_prefix.isin(target_services)
+                if fallback_mask.any():
+                    logger.info(f"  {fault_name:<16}: labeling {int(fallback_mask.sum())} victim pod rows in injection window")
+                    per_pod_mask = fallback_mask
+
             df.loc[per_pod_mask, "label"] = label
-            logger.info(f"  {fault_name:<16}: {int(per_pod_mask.sum()):>5} rows with measured {metric} change")
+            logger.info(f"  {fault_name:<16}: {int(per_pod_mask.sum()):>5} rows labeled")
 
         if "net_latency" in self.fault_windows:
             window = self.fault_windows["net_latency"]

@@ -515,6 +515,8 @@ def main() -> int:
     parser.add_argument("--min-fault-macro-f1", type=float, default=0.80)
     parser.add_argument("--resume-campaign", type=str, default=None,
                         help="Resume an existing campaign ID by reusing already collected sessions")
+    parser.add_argument("--relabel", action="store_true",
+                        help="Relabel existing sessions using the latest data labeler logic")
     args = parser.parse_args()
 
     if args.scrape_minutes < 63:
@@ -624,7 +626,7 @@ def main() -> int:
             existing_raw = sorted(session_dir.glob("metrics_*.csv"), key=lambda p: p.stat().st_mtime)
             existing_fault = session_dir / "faults.log"
 
-            if existing_cleaned.exists() and existing_cleaned.stat().st_size > 0:
+            if not args.relabel and existing_cleaned.exists() and existing_cleaned.stat().st_size > 0:
                 raw_csv = existing_raw[-1] if existing_raw else session_dir / "metrics.csv"
                 fault_log = existing_fault
                 cleaned_csv = existing_cleaned

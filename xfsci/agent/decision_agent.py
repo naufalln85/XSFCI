@@ -311,7 +311,7 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
             try:
                 cmd = [agy_bin, "--model", model_name, "--dangerously-skip-permissions", "-p", full_prompt]
                 logger.info(f"🚀 Memanggil agy CLI --model {model_name}...")
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, stdin=subprocess.DEVNULL)
                 if proc.returncode == 0 and proc.stdout.strip():
                     logger.success(f"✅ agy CLI ({model_name}) berhasil merespon!")
                     return proc.stdout.strip()

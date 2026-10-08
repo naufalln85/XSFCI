@@ -95,6 +95,24 @@ inject_memory_leak() {
     local dur="$3"
 
     echo -e "${RED}💣 Injecting MEMORY LEAK into ${pod}/${ns} for ${dur}s...${NC}"
+
+    # Cek apakah container memiliki shell (distroless fallback)
+    if ! kubectl exec -n "$ns" "$pod" -- sh -c "exit 0" 2>/dev/null; then
+        local node
+        node=$(kubectl get pod "$pod" -n "$ns" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)
+        echo -e "${YELLOW}   ⚠️ Pod '${pod}' adalah container distroless (tanpa /bin/sh).${NC}"
+        echo -e "${CYAN}   🚀 Menjalankan stress-ng sibling pod pada node '${node}'...${NC}"
+        kubectl delete pod fault-memory-leak-turbo -n "$ns" --now 2>/dev/null || true
+        kubectl run "fault-memory-leak-turbo" -n "$ns" \
+            --image=alexeiled/stress-ng:latest --restart=Never \
+            --overrides="{\"spec\":{\"nodeName\":\"${node}\"}}" \
+            -- --vm 2 --vm-bytes 512M --timeout "${dur}s" 2>/dev/null || true
+        (sleep "$dur" && kubectl delete pod "fault-memory-leak-turbo" -n "$ns" --now 2>/dev/null) &
+        local chaos_pid=$!
+        echo -e "${GREEN}   Chaos PID: ${chaos_pid}${NC}"
+        return 0
+    fi
+
     echo -e "${YELLOW}   Metode: Alokasi memori bertahap menggunakan shell /dev/urandom${NC}"
 
     # Alokasi memori 50MB setiap 5 detik
@@ -125,6 +143,24 @@ inject_cpu_stress() {
     local dur="$3"
 
     echo -e "${RED}💣 Injecting CPU STRESS into ${pod}/${ns} for ${dur}s...${NC}"
+
+    # Cek apakah container memiliki shell (distroless fallback)
+    if ! kubectl exec -n "$ns" "$pod" -- sh -c "exit 0" 2>/dev/null; then
+        local node
+        node=$(kubectl get pod "$pod" -n "$ns" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)
+        echo -e "${YELLOW}   ⚠️ Pod '${pod}' adalah container distroless (tanpa /bin/sh).${NC}"
+        echo -e "${CYAN}   🚀 Menjalankan stress-ng CPU pod pada node '${node}'...${NC}"
+        kubectl delete pod fault-cpu-stress-turbo -n "$ns" --now 2>/dev/null || true
+        kubectl run "fault-cpu-stress-turbo" -n "$ns" \
+            --image=alexeiled/stress-ng:latest --restart=Never \
+            --overrides="{\"spec\":{\"nodeName\":\"${node}\"}}" \
+            -- --cpu 2 --timeout "${dur}s" 2>/dev/null || true
+        (sleep "$dur" && kubectl delete pod "fault-cpu-stress-turbo" -n "$ns" --now 2>/dev/null) &
+        local chaos_pid=$!
+        echo -e "${GREEN}   Chaos PID: ${chaos_pid}${NC}"
+        return 0
+    fi
+
     echo -e "${YELLOW}   Metode: Infinite loop di semua CPU core${NC}"
 
     kubectl exec -n "$ns" "$pod" -- sh -c "

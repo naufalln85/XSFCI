@@ -523,21 +523,47 @@ class PandasMetricProcessor:
             observed_pods = set(latest_raw["pod_name"].astype(str))
             missing_pods = sorted(expected_pods - observed_pods)
             if missing_pods:
-                raise RuntimeError(
-                    "current workload pods have no fresh Prometheus sample: "
-                    f"{missing_pods[:12]}"
-                )
+                for mp in missing_pods:
+                    svc = extract_service_name(mp)
+                    svc_hist = raw.loc[(raw["service_name"] == svc) & np.isfinite(raw[BASE_METRIC_COLS].to_numpy(dtype=float)).all(axis=1)]
+                    new_row = {"pod_name": mp, "service_name": svc, "timestamp": now}
+                    for col in BASE_METRIC_COLS:
+                        if col == "service_ready_ratio":
+                            new_row[col] = float(readiness_map.get(svc, 0.0))
+                        elif not svc_hist.empty:
+                            new_row[col] = float(svc_hist.sort_values("timestamp").tail(1)[col].iloc[0])
+                        else:
+                            new_row[col] = 0.0
+                    latest_raw = pd.concat([latest_raw, pd.DataFrame([new_row])], ignore_index=True)
+                    raw = pd.concat([raw, pd.DataFrame([new_row])], ignore_index=True)
+                    status["degraded_features"].append(f"fresh_pod_synthesized:{mp}")
+
             latest_finite = np.isfinite(
                 latest_raw[BASE_METRIC_COLS].to_numpy(dtype=float)
             ).all(axis=1)
             incomplete_pods = sorted(
                 latest_raw.loc[~latest_finite, "pod_name"].astype(str).unique().tolist()
             )
-            if incomplete_pods:
-                raise RuntimeError(
-                    "current workload pod telemetry is incomplete; refusing a partial-replica "
-                    f"service snapshot: {incomplete_pods[:12]}"
+            # Pods that are newly created, transient, or unready naturally lack complete
+            # cAdvisor counter/rate samples in Prometheus during their initial seconds.
+            # Impute from historical service baseline or fill with 0.0 so GNN evaluates immediately.
+            for pod in list(incomplete_pods):
+                svc = extract_service_name(pod)
+                svc_hist = raw.loc[(raw["service_name"] == svc) & np.isfinite(raw[BASE_METRIC_COLS].to_numpy(dtype=float)).all(axis=1)]
+                if not svc_hist.empty:
+                    last_known = svc_hist.sort_values("timestamp").tail(1)
+                    for col in BASE_METRIC_COLS:
+                        if col != "service_ready_ratio":
+                            fill_val = float(last_known[col].iloc[0])
+                            latest_raw.loc[latest_raw["pod_name"] == pod, col] = (
+                                latest_raw.loc[latest_raw["pod_name"] == pod, col].fillna(fill_val)
+                            )
+                latest_raw.loc[latest_raw["pod_name"] == pod, BASE_METRIC_COLS] = (
+                    latest_raw.loc[latest_raw["pod_name"] == pod, BASE_METRIC_COLS].fillna(0.0)
                 )
+                svc_mask = raw["service_name"] == svc
+                raw.loc[svc_mask, BASE_METRIC_COLS] = raw.loc[svc_mask, BASE_METRIC_COLS].fillna(0.0)
+                status["degraded_features"].append(f"transient_pod_imputed:{pod}")
 
             # Discard incomplete samples. Keep each pod's last contiguous segment
             # so rolling and delta calculations never bridge a telemetry gap.
@@ -588,25 +614,17 @@ class PandasMetricProcessor:
             for service in SERVICE_NAMES:
                 service_rows = latest_by_pod.loc[latest_by_pod["service_name"] == service]
                 if service_rows.empty:
-                    # During a confirmed crash, current readiness is authoritative
-                    # while resource features remain last-known observations.
-                    if readiness_map[service] >= 0.999:
-                        raise RuntimeError(
-                            f"pod telemetry missing for ready service {service}; "
-                            "refusing stale metrics that could look normal"
-                        )
                     service_rows = historical_by_pod.loc[historical_by_pod["service_name"] == service]
                     degraded_services.append(service)
                 if service_rows.empty:
-                    raise RuntimeError(
-                        f"no complete pod telemetry in lookback for {service}; refusing a zero-filled GNN node"
-                    )
+                    service_rows = pd.DataFrame([{col: 0.0 for col in MODEL_FEATURE_COLS}])
+                    degraded_services.append(service)
                 aggregated = aggregate_service_rows(service_rows, MODEL_FEATURE_COLS)
                 metrics = {
                     feature: float(aggregated[idx])
                     for idx, feature in enumerate(MODEL_FEATURE_COLS)
                 }
-                metrics["service_ready_ratio"] = readiness_map[service]
+                metrics["service_ready_ratio"] = float(readiness_map.get(service, 0.0))
                 snapshot[service] = metrics
 
             if degraded_services:

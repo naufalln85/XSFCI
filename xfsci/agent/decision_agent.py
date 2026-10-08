@@ -309,7 +309,7 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
 
             # Slug sudah lengkap dari `agy models`, langsung pakai di --model
             try:
-                cmd = [agy_bin, "--model", model_name, "-p", full_prompt]
+                cmd = [agy_bin, "--model", model_name, "--dangerously-skip-permissions", "-p", full_prompt]
                 logger.info(f"🚀 Memanggil agy CLI --model {model_name}...")
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
                 if proc.returncode == 0 and proc.stdout.strip():

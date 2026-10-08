@@ -272,14 +272,15 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         sandbox_on = self.antigravity_config.get("sandbox_mode", True)
         primary_model = self.antigravity_config.get("model_priority", "claude-opus-4-6-thinking")
         fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.8-flash-high")
-        timeout_sec = self.antigravity_config.get("timeout_seconds", 90)
+        primary_timeout = int(self.antigravity_config.get("primary_timeout_seconds", 60))
+        fallback_timeout = int(self.antigravity_config.get("fallback_timeout_seconds", self.antigravity_config.get("timeout_seconds", 150)))
 
         # ──────────────────────────────────────────────────────
         # Jalur 1 (Sinkron): Antigravity CLI — `agy -p`
         #   Menggunakan sesi Akun Pro dari `agy auth login`.
         #   TIDAK membutuhkan GEMINI_API_KEY.
         # ──────────────────────────────────────────────────────
-        def _call_via_cli(model_name: str) -> Optional[str]:
+        def _call_via_cli(model_name: str, timeout: int = 150) -> Optional[str]:
             """Panggil agy CLI dengan slug model PERSIS dari `agy models`."""
             import shutil
             import subprocess
@@ -310,8 +311,8 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
             # Slug sudah lengkap dari `agy models`, langsung pakai di --model
             try:
                 cmd = [agy_bin, "--model", model_name, "--dangerously-skip-permissions", "-p", full_prompt]
-                logger.info(f"🚀 Memanggil agy CLI --model {model_name}...")
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, stdin=subprocess.DEVNULL)
+                logger.info(f"🚀 Memanggil agy CLI --model {model_name} (timeout: {timeout}s)...")
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
                 if proc.returncode == 0 and proc.stdout.strip():
                     logger.success(f"✅ agy CLI ({model_name}) berhasil merespon!")
                     return proc.stdout.strip()
@@ -319,7 +320,7 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
                 if proc.stderr:
                     logger.debug(f"agy stderr ({model_name}): {proc.stderr[:300]}")
             except subprocess.TimeoutExpired:
-                logger.warning(f"agy CLI timed out ({timeout_sec}s) untuk {model_name}")
+                logger.warning(f"agy CLI timed out ({timeout}s) untuk {model_name}")
             except Exception as e:
                 logger.debug(f"agy CLI --model {model_name} error: {e}")
 
@@ -380,8 +381,8 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         model_used = primary_model
 
         # 1️⃣ Model Prioritas: Claude Opus 4.6 (Thinking)
-        logger.info(f"🚀 [Antigravity SRE] Model Prioritas: {primary_model} (Sandbox: {sandbox_on})")
-        response_text = _call_via_cli(primary_model)
+        logger.info(f"🚀 [Antigravity SRE] Model Prioritas: {primary_model} (Timeout: {primary_timeout}s | Sandbox: {sandbox_on})")
+        response_text = _call_via_cli(primary_model, timeout=primary_timeout)
 
         if not response_text:
             logger.debug(f"CLI gagal untuk {primary_model}, mencoba SDK...")
@@ -390,12 +391,12 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         # 2️⃣ Auto-Switch ke Fallback: Gemini 3.8 Flash (High)
         if not response_text:
             logger.warning(
-                f"⚠️ Model prioritas '{primary_model}' tidak tersedia. "
-                f"🔄 AUTO-SWITCHING ke Fallback: '{fallback_model}'..."
+                f"⚠️ Model prioritas '{primary_model}' tidak tersedia / timed out ({primary_timeout}s). "
+                f"🔄 AUTO-SWITCHING ke Fallback: '{fallback_model}' (Timeout: {fallback_timeout}s)..."
             )
             model_used = fallback_model
 
-            response_text = _call_via_cli(fallback_model)
+            response_text = _call_via_cli(fallback_model, timeout=fallback_timeout)
             if not response_text:
                 response_text = _call_via_sdk(fallback_model)
 

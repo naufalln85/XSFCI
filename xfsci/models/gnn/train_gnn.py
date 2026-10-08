@@ -6,11 +6,11 @@ Pipeline pelatihan model DualHeadGATv2 berstandar paper top-tier
 (USENIX ATC '22 DejaVu, ACM KDD, RCAEval).
 
 V2 Improvements:
-  - 21 fitur (dari 18): + memory_slope_12, cpu_zscore_pod, net_asymmetry
+  - Feature count and order follow feature_contract.py (currently 23)
   - Physical Guardrails diperkuat:
     * MEMORY_LEAK: slope harus positif (memory sedang naik)
-    * NETWORK_LATENCY: asymmetry harus tinggi
-    * POD_CRASH: restart_delta harus > 0
+    * NETWORK_LATENCY: p95 span latency harus terukur
+    * POD_CRASH: readiness/restart evidence, bukan restart counter saja
     * CPU_STRESS: cpu_usage harus > threshold
   - RCA Scoring: bobot lokal diperkaya fitur baru
 
@@ -30,6 +30,8 @@ import sys
 import json
 import time
 import argparse
+import hashlib
+import random
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional
@@ -54,22 +56,24 @@ from models.gnn.graph_dataset import (
     NUM_SERVICES,
     NORMALIZED_FEATURE_COLS,
     FEATURE_PIPELINE_VERSION,
+    IGNORE_LABEL,
 )
 
 # Indeks fitur kunci dalam vektor fitur node (sorted alphabetically)
-# V2: 21 fitur total (sorted → index otomatis dihitung)
 _sorted_features = sorted(NORMALIZED_FEATURE_COLS)
 IDX_ANOMALY_SCORE = _sorted_features.index("anomaly_score_raw_norm")
 IDX_CPU_USAGE = _sorted_features.index("cpu_usage_norm")
 IDX_POD_RESTARTS = _sorted_features.index("pod_restarts_norm")
 IDX_RESTART_DELTA = _sorted_features.index("restart_delta_norm")
-# V2: New discriminative feature indices
 IDX_MEMORY_SLOPE = _sorted_features.index("memory_slope_12_norm")
 IDX_CPU_ZSCORE = _sorted_features.index("cpu_zscore_pod_norm")
-IDX_NET_ASYMMETRY = _sorted_features.index("net_asymmetry_norm")
 IDX_MEMORY_GROWTH = _sorted_features.index("memory_growth_rate_norm")
+IDX_LATENCY_P95 = _sorted_features.index("request_latency_p95_ms_norm")
+IDX_READY_RATIO = _sorted_features.index("service_ready_ratio_norm")
 
 from models.gnn.gnn_model import DualHeadGATv2
+from models.gnn.decision_policy import apply_physical_guardrails
+_feature_index = {name: idx for idx, name in enumerate(_sorted_features)}
 
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
 WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -130,7 +134,9 @@ class GNNTrainer:
                  label_smoothing: float = 0.05,
                  graph_loss_weight: float = 0.3,
                  fault_weight_cap: float = 2.0,
-                 epochs: int = 80):
+                 epochs: int = 80,
+                 dataset_info: Optional[dict] = None,
+                 seed: int = 42):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -139,12 +145,15 @@ class GNNTrainer:
         self.graph_loss_weight = graph_loss_weight
         self.label_smoothing = label_smoothing
         self.fault_weight_cap = fault_weight_cap
+        self.dataset_info = dataset_info or {}
+        self.seed = seed
 
         # Class weights untuk Weighted Cross-Entropy Loss
         self.class_weights = self._compute_class_weights().to(device)
         self.node_criterion = nn.CrossEntropyLoss(
             weight=self.class_weights,
-            label_smoothing=label_smoothing
+            label_smoothing=label_smoothing,
+            ignore_index=IGNORE_LABEL,
         )
         self.graph_criterion = nn.BCELoss()
 
@@ -173,8 +182,8 @@ class GNNTrainer:
         counts = np.zeros(len(LABEL_MAP), dtype=np.float32)
         for batch in self.train_loader:
             labels = batch.y.cpu().numpy()
-            for l in labels:
-                counts[l] += 1
+            valid_labels = labels[(labels >= 0) & (labels < len(LABEL_MAP))]
+            counts += np.bincount(valid_labels, minlength=len(LABEL_MAP)).astype(np.float32)
         
         counts = np.maximum(counts, 1.0)
         total_samples = float(counts.sum())
@@ -205,8 +214,17 @@ class GNNTrainer:
             batch_idx = getattr(batch, "batch", None)
             node_logits, graph_urgency, _ = self.model(batch.x, batch.edge_index, batch_idx)
 
-            loss_node = self.node_criterion(node_logits, batch.y)
-            loss_graph = self.graph_criterion(graph_urgency.squeeze(-1), batch.y_graph.squeeze(-1))
+            valid_nodes = batch.y != IGNORE_LABEL
+            loss_node = (
+                self.node_criterion(node_logits[valid_nodes], batch.y[valid_nodes])
+                if valid_nodes.any() else node_logits.sum() * 0.0
+            )
+            graph_targets = batch.y_graph.squeeze(-1)
+            valid_graphs = graph_targets >= 0
+            loss_graph = (
+                self.graph_criterion(graph_urgency.squeeze(-1)[valid_graphs], graph_targets[valid_graphs])
+                if valid_graphs.any() else graph_urgency.sum() * 0.0
+            )
 
             loss = loss_node + (self.graph_loss_weight * loss_graph)
             loss.backward()
@@ -250,8 +268,17 @@ class GNNTrainer:
                 batch_idx = getattr(batch, "batch", None)
                 node_logits, graph_urgency, _ = self.model(batch.x, batch.edge_index, batch_idx)
 
-                loss_node = self.node_criterion(node_logits, batch.y)
-                loss_graph = self.graph_criterion(graph_urgency.squeeze(-1), batch.y_graph.squeeze(-1))
+                valid_nodes = batch.y != IGNORE_LABEL
+                loss_node = (
+                    self.node_criterion(node_logits[valid_nodes], batch.y[valid_nodes])
+                    if valid_nodes.any() else node_logits.sum() * 0.0
+                )
+                graph_targets = batch.y_graph.squeeze(-1)
+                valid_graphs = graph_targets >= 0
+                loss_graph = (
+                    self.graph_criterion(graph_urgency.squeeze(-1)[valid_graphs], graph_targets[valid_graphs])
+                    if valid_graphs.any() else graph_urgency.sum() * 0.0
+                )
                 loss = loss_node + (self.graph_loss_weight * loss_graph)
                 total_loss += loss.item()
 
@@ -263,16 +290,33 @@ class GNNTrainer:
                 g_probs = graph_urgency.squeeze(-1).cpu().numpy()
                 g_preds = (g_probs >= 0.5).astype(np.int64)
                 g_targets = (batch.y_graph.squeeze(-1) >= 0.5).long().cpu().numpy()
-                all_graph_preds.extend(g_preds)
-                all_graph_targets.extend(g_targets)
+                # Evaluate the same graph gate and physical guardrails as the
+                # live predictor so held-out metrics reflect deployed output.
+                feature_rows = batch.x.cpu().numpy()
+                node_probabilities = node_probs.cpu().numpy()
+                for graph_idx, graph_risk in enumerate(g_probs):
+                    start_node = graph_idx * NUM_SERVICES
+                    end_node = start_node + NUM_SERVICES
+                    if graph_risk < 0.50:
+                        preds[start_node:end_node] = 0
+                    else:
+                        for node_idx in range(start_node, end_node):
+                            guarded = apply_physical_guardrails(
+                                node_probabilities[node_idx],
+                                feature_rows[node_idx],
+                                _feature_index,
+                            )
+                            preds[node_idx] = int(np.argmax(guarded))
+                if valid_graphs.any():
+                    all_graph_preds.extend(g_preds[valid_graphs.cpu().numpy()])
+                    all_graph_targets.extend(g_targets[valid_graphs.cpu().numpy()])
 
-                # Native Data-Driven GNN Predictions (USENIX ATC '22 / KDD Benchmark Standard):
-                # Node classifier menggabungkan GATv2 node embeddings dengan residual feature bypass.
-                # Prediksi node dievaluasi secara murni (end-to-end argmax) tanpa hardcoded override
-                # yang mendistorsi deteksi anomali pada pod yang di-recreate oleh Kubernetes.
+                # Node metrics above use the same deterministic guardrails as
+                # production. Invalid-label nodes are still excluded below.
 
-                all_preds.extend(preds)
-                all_targets.extend(targets)
+                valid_nodes_np = valid_nodes.cpu().numpy()
+                all_preds.extend(preds[valid_nodes_np])
+                all_targets.extend(targets[valid_nodes_np])
 
                 # Evaluasi Root Cause Localization (RCA Top-1 & Top-3) per graf
                 num_graphs_in_batch = len(g_targets)
@@ -282,7 +326,8 @@ class GNNTrainer:
 
                     graph_y = targets[start_node:end_node]
                     # Apakah graf ini sedang mengalami anomali?
-                    true_fault_nodes = np.where(graph_y > 0)[0]
+                    known_nodes = graph_y != IGNORE_LABEL
+                    true_fault_nodes = np.where((graph_y > 0) & known_nodes)[0]
                     if len(true_fault_nodes) > 0:
                         total_anom_graphs += 1
                         # --- Hybrid RCA Scoring V2 (GNN + Enriched Local Features) ---
@@ -295,17 +340,21 @@ class GNNTrainer:
                         local_cpu_zscore = raw_x[:, IDX_CPU_ZSCORE]  # Z-score CPU per pod
                         local_restart = raw_x[:, IDX_RESTART_DELTA]  # Restart delta
                         local_mem_slope = raw_x[:, IDX_MEMORY_SLOPE] # Memory slope (leak indicator)
-                        local_net_asym = raw_x[:, IDX_NET_ASYMMETRY] # Network asymmetry
-                        # V2 Gabungan fitur lokal: lebih banyak sinyal diskriminatif
+                        local_latency = raw_x[:, IDX_LATENCY_P95]
+                        local_unready = 1.0 - raw_x[:, IDX_READY_RATIO]
+                        # Include measured latency/readiness, the observable
+                        # signals for network delay and pod availability.
                         local_scores = (
-                            0.25 * local_anomaly +
-                            0.20 * local_cpu_zscore +
-                            0.20 * local_restart +
-                            0.20 * local_mem_slope +
-                            0.15 * local_net_asym
+                            0.20 * local_anomaly +
+                            0.15 * local_cpu_zscore +
+                            0.15 * local_restart +
+                            0.15 * local_mem_slope +
+                            0.20 * local_latency +
+                            0.15 * local_unready
                         )
                         # Hybrid: 25% GNN + 75% lokal (mengatasi graph contamination)
                         anomaly_scores = 0.25 * gnn_scores + 0.75 * local_scores
+                        anomaly_scores[~known_nodes] = -np.inf
                         # Ranking pod dari skor anomali tertinggi
                         ranked_nodes = np.argsort(-anomaly_scores)
 
@@ -320,6 +369,11 @@ class GNNTrainer:
         all_targets = np.array(all_targets)
         all_graph_preds = np.array(all_graph_preds)
         all_graph_targets = np.array(all_graph_targets)
+
+        if all_targets.size == 0:
+            raise RuntimeError("Evaluation split contains no telemetry-known node labels; refusing to report metrics.")
+        if all_graph_targets.size == 0:
+            raise RuntimeError("Evaluation split contains no telemetry-known graph labels; refusing to report cluster metrics.")
 
         # Metrik level node
         acc = accuracy_score(all_targets, all_preds)
@@ -414,6 +468,11 @@ class GNNTrainer:
                     },
                     "best_epoch": epoch,
                     "best_score": best_score,
+                    "seed": self.seed,
+                    "dataset_sha256": self.dataset_info.get("dataset_sha256"),
+                    "train_sessions": self.dataset_info.get("train_sessions", []),
+                    "validation_sessions": self.dataset_info.get("validation_sessions", []),
+                    "test_sessions": self.dataset_info.get("test_sessions", []),
                 }
                 # Never expose a mid-training checkpoint at the runtime model path.
                 # The final held-out test gate below promotes only a completed model.
@@ -471,7 +530,7 @@ class GNNTrainer:
                 logger.info(f"  {name:<25} : Precision={p[idx]*100:5.1f}% | Recall={r[idx]*100:5.1f}% | F1={f[idx]*100:5.1f}% | Samples={s[idx]:>5,}")
 
         # Confusion Matrix
-        cm = confusion_matrix(test_res["targets"], test_res["preds"])
+        cm = confusion_matrix(test_res["targets"], test_res["preds"], labels=list(range(len(LABEL_MAP))))
         logger.info("\n🔍 Confusion Matrix:")
         logger.info(f"{'Pred ->':<10}" + "".join([f"{k[:4]:>7}" for k in LABEL_MAP.keys()]))
         for i, row in enumerate(cm):
@@ -492,7 +551,7 @@ class GNNTrainer:
             )
 
         # Simpan Model Checkpoint
-        model_path = WEIGHTS_DIR / "gnn_best.pt"
+        model_path = WEIGHTS_DIR / "gnn_training_candidate.pt"
         metrics_path = WEIGHTS_DIR / "training_metrics.json"
 
         checkpoint = {
@@ -508,6 +567,12 @@ class GNNTrainer:
             },
             "class_weights": self.class_weights.cpu().tolist(),
             "training_metrics": {
+                "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
+                "dataset_sha256": self.dataset_info.get("dataset_sha256"),
+                "train_sessions": self.dataset_info.get("train_sessions", []),
+                "validation_sessions": self.dataset_info.get("validation_sessions", []),
+                "test_sessions": self.dataset_info.get("test_sessions", []),
+                "seed": self.seed,
                 "best_epoch": best_epoch,
                 "cluster_anomaly_accuracy": float(test_res["graph_acc"]),
                 "top3_rca_accuracy": float(test_res["a_at_3"]),
@@ -528,10 +593,10 @@ class GNNTrainer:
         }
 
         torch.save(checkpoint, model_path)
-        candidate_path = WEIGHTS_DIR / "gnn_training_candidate.pt"
-        if candidate_path.exists():
-            candidate_path.unlink()
-        logger.success(f"\nModel tersimpan di: {model_path} ({model_path.stat().st_size / 1024:.1f} KB)")
+        logger.success(
+            f"\nKandidat tersimpan di: {model_path} "
+            f"({model_path.stat().st_size / 1024:.1f} KB); quality campaign must accept it before promotion."
+        )
 
         with open(metrics_path, "w", encoding="utf-8") as f:
             json.dump(checkpoint["training_metrics"], f, indent=2)
@@ -551,7 +616,14 @@ def main():
     parser.add_argument("--graph-loss-weight", type=float, default=0.3, help="Graph loss weight (default: 0.3)")
     parser.add_argument("--fault-weight-cap", type=float, default=2.0, help="Max class weight untuk kelas fault (default: 2.0, naikkan ke 4-8 untuk imbalanced data)")
     parser.add_argument("--device", type=str, default="auto", help="Device: cpu | cuda | auto")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for repeatable model initialization and shuffling")
     args = parser.parse_args()
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -583,7 +655,9 @@ def main():
         label_smoothing=args.label_smoothing,
         graph_loss_weight=args.graph_loss_weight,
         fault_weight_cap=args.fault_weight_cap,
-        epochs=args.epochs
+        epochs=args.epochs,
+        dataset_info=info,
+        seed=args.seed,
     )
 
     metrics = trainer.run_training(epochs=args.epochs, patience=args.patience)

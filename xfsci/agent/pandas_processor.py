@@ -60,7 +60,10 @@ class PandasMetricProcessor:
             "PROMETHEUS_URL",
             self.config.get("monitoring", {}).get("prometheus", {}).get("url", "http://172.20.0.104:30090")
         )
-        self.target_namespace = self.config.get("data", {}).get("target_namespace", "demo")
+        self.target_namespace = os.environ.get(
+            "TARGET_NAMESPACE",
+            self.config.get("data", {}).get("target_namespace", "demo"),
+        )
         self._last_warn_time = 0.0
         self._gnn_scaler_params = None
         self.last_gnn_snapshot_status = {"available": False, "reason": "not_collected"}
@@ -256,12 +259,14 @@ class PandasMetricProcessor:
             self._gnn_scaler_params = json.load(scaler_file)
         return self._gnn_scaler_params
 
-    def get_gnn_feature_snapshot(self, lookback_minutes: int = 15) -> tuple[dict, dict]:
-        """Build a complete live {service: 21 raw features} snapshot for GNN inference.
+    def get_gnn_feature_snapshot(
+        self, lookback_minutes: int = 15, *, preflight: bool = False
+    ) -> tuple[dict, dict]:
+        """Build a complete live snapshot following the current feature contract.
 
         Telemetry is queried by pod from Prometheus, transformed with the same
-        FeatureEngineer functions used for training, then replicas are averaged
-        into the canonical service nodes. Missing required telemetry fails closed.
+        FeatureEngineer functions used for training, then replica risks are
+        preserved during service aggregation. Missing required telemetry fails closed.
         """
         from data.preprocessors.feature_engineer import FeatureEngineer
         from models.gnn.feature_contract import (
@@ -271,8 +276,10 @@ class PandasMetricProcessor:
             FEATURE_PIPELINE_VERSION,
             MODEL_FEATURE_COLS,
             application_metric_queries,
+            service_readiness_query,
         )
         from models.gnn.graph_dataset import SERVICE_NAMES, extract_service_name
+        from models.gnn.service_aggregation import aggregate_service_rows
 
         status = {
             "available": False,
@@ -284,23 +291,34 @@ class PandasMetricProcessor:
             "reason": "collecting",
         }
         try:
-            scaler = self._load_gnn_scaler_params()
+            scaler = {} if preflight else self._load_gnn_scaler_params()
             contract_path = Path(__file__).resolve().parent.parent / "data" / "processed" / "feature_contract.json"
-            if not contract_path.exists():
-                raise RuntimeError("feature_contract.json is missing; rerun feature_engineer.py")
-            import json
-            with open(contract_path, "r", encoding="utf-8") as contract_file:
-                contract = json.load(contract_file)
-            if contract.get("version") != FEATURE_PIPELINE_VERSION:
-                raise RuntimeError(
-                    f"feature contract version mismatch: {contract.get('version')!r}; "
-                    f"expected {FEATURE_PIPELINE_VERSION!r}; rerun feature_engineer.py and retrain GNN"
-                )
-            missing_scaler = sorted(set(MODEL_FEATURE_COLS) - set(scaler))
-            if missing_scaler:
-                raise RuntimeError(f"scaler schema incomplete: {missing_scaler}")
+            if not preflight:
+                if not contract_path.exists():
+                    raise RuntimeError("feature_contract.json is missing; rerun feature_engineer.py")
+                import json
+                with open(contract_path, "r", encoding="utf-8") as contract_file:
+                    contract = json.load(contract_file)
+                if contract.get("version") != FEATURE_PIPELINE_VERSION:
+                    raise RuntimeError(
+                        f"feature contract version mismatch: {contract.get('version')!r}; "
+                        f"expected {FEATURE_PIPELINE_VERSION!r}; rerun feature_engineer.py and retrain GNN"
+                    )
+                missing_scaler = sorted(set(MODEL_FEATURE_COLS) - set(scaler))
+                if missing_scaler:
+                    raise RuntimeError(f"scaler schema incomplete: {missing_scaler}")
 
             ns = self.target_namespace
+            pod_info = self._query_prometheus(f'kube_pod_info{{namespace="{ns}"}}')
+            if pod_info is None or "pod" not in pod_info.columns:
+                raise RuntimeError("current pod UID/node inventory unavailable from kube-state-metrics")
+            expected_pods = {
+                str(pod) for pod in pod_info["pod"].dropna().astype(str)
+                if extract_service_name(str(pod)) in SERVICE_NAMES
+            }
+            if not expected_pods:
+                raise RuntimeError("kube-state-metrics returned no current workload pods")
+
             queries = {
                 "cpu_usage": f'sum(rate(container_cpu_usage_seconds_total{{namespace="{ns}",container!="",container!="POD"}}[1m])) by (pod)',
                 "memory_usage": f'sum(container_memory_working_set_bytes{{namespace="{ns}",container!="",container!="POD"}}) by (pod)',
@@ -317,17 +335,35 @@ class PandasMetricProcessor:
                 **application_metric_queries(ns),
             }
 
+            readiness_frame = self._query_prometheus(service_readiness_query(ns))
+            if readiness_frame is None or "service" not in readiness_frame.columns:
+                raise RuntimeError("service readiness telemetry unavailable from kube-state-metrics")
+            readiness_map = {}
+            for row in readiness_frame.itertuples():
+                service = str(getattr(row, "service", ""))
+                try:
+                    value = float(row.value)
+                except (TypeError, ValueError):
+                    continue
+                if service in SERVICE_NAMES and np.isfinite(value):
+                    readiness_map[service] = float(np.clip(value, 0.0, 1.0))
+            missing_readiness = sorted(set(SERVICE_NAMES) - set(readiness_map))
+            if missing_readiness:
+                raise RuntimeError(f"service readiness unavailable for services: {missing_readiness}")
+
             def constant_zero(metric_name: str) -> bool:
-                params = scaler.get(metric_name, {})
+                params = scaler.get(metric_name)
+                if params is None:
+                    return False
                 return float(params.get("min", 0.0)) == 0.0 and float(params.get("max", 0.0)) == 0.0
 
             # A source may be absent only if its training column was constant
             # zero. Preserve that training value but expose the missing source.
-            app_metric_names = {"request_rate", "error_rate"}
+            app_metric_names = {"request_rate", "error_rate", "request_latency_p95_ms"}
             # Application metrics require a real trace source even when their
             # scaler happens to be constant; absence must not masquerade as 0.
             optional_zero_metrics = {
-                name for name in BASE_METRIC_COLS
+                name for name in BASE_METRIC_COLS if name != "service_ready_ratio"
                 if name not in app_metric_names and constant_zero(name)
             }
             with ThreadPoolExecutor(max_workers=len(queries)) as pool:
@@ -394,6 +430,8 @@ class PandasMetricProcessor:
 
             frames = []
             for metric_name in BASE_METRIC_COLS:
+                if metric_name == "service_ready_ratio":
+                    continue
                 result = results.get(metric_name)
                 if result is None or result.empty:
                     if metric_name in optional_zero_metrics:
@@ -411,6 +449,28 @@ class PandasMetricProcessor:
             for metric_frame in frames[1:]:
                 raw = raw.merge(metric_frame, on=["pod_name", "timestamp"], how="outer")
             raw["service_name"] = raw["pod_name"].map(extract_service_name)
+            raw["service_ready_ratio"] = raw["service_name"].map(readiness_map)
+
+            span_rows = raw["service_name"].isin(APP_SPAN_SERVICES)
+            # Do not synthesize missing request rates. Missing request series
+            # stay unknown and are excluded; only a measured zero rate permits
+            # zero latency/error fallback.
+            request_rate_values = pd.to_numeric(raw["request_rate"], errors="coerce")
+            measured_idle = span_rows & request_rate_values.notna() & request_rate_values.le(1e-9)
+            for metric_name in ("error_rate", "request_latency_p95_ms"):
+                raw.loc[measured_idle & raw[metric_name].isna(), metric_name] = 0.0
+            active_requests = span_rows & request_rate_values.gt(1e-9)
+            for metric_name in ("error_rate", "request_latency_p95_ms"):
+                missing_for_active = active_requests & raw[metric_name].isna()
+                if missing_for_active.any():
+                    pods = sorted(raw.loc[missing_for_active, "pod_name"].astype(str).unique().tolist())
+                    raise RuntimeError(
+                        f"{metric_name} missing for active request pods: {pods[:12]}"
+                    )
+
+            zero_service_rows = raw["service_name"].isin(APP_SPAN_ZERO_SERVICES)
+            for metric_name in app_metric_names:
+                raw.loc[zero_service_rows & raw[metric_name].isna(), metric_name] = 0.0
 
             for metric_name in app_metric_names:
                 if metric_name not in raw.columns:
@@ -426,7 +486,6 @@ class PandasMetricProcessor:
 
                 # Redis has no server-span instrumentation in this deployment;
                 # its explicit zero policy is recorded in the feature contract.
-                zero_service_rows = raw["service_name"].isin(APP_SPAN_ZERO_SERVICES)
                 raw.loc[zero_service_rows, metric_name] = raw.loc[
                     zero_service_rows, metric_name
                 ].fillna(0.0)
@@ -437,12 +496,6 @@ class PandasMetricProcessor:
                 if raw[metric_name].isna().any():
                     status["degraded_features"].append(metric_name)
                 raw[metric_name] = raw[metric_name].fillna(0.0)
-
-            for metric_name in app_metric_names.intersection(raw.columns):
-                if raw[metric_name].isna().any():
-                    status["degraded_features"].append(metric_name)
-                    # Idle intervals with verified instrumentation have 0 request volume / errors
-                    raw[metric_name] = raw[metric_name].fillna(0.0)
 
             raw.sort_values(["pod_name", "timestamp"], inplace=True)
             for metric_name in BASE_METRIC_COLS:
@@ -455,9 +508,41 @@ class PandasMetricProcessor:
             if raw.empty:
                 raise RuntimeError("no Prometheus pods map to the configured 11 services")
 
+            now = pd.Timestamp(datetime.utcnow())
+            fresh_mask = (now - raw["timestamp"]) <= pd.Timedelta(seconds=60)
+            fresh_mask &= raw["pod_name"].isin(expected_pods)
+            fresh_raw = raw.loc[fresh_mask].copy()
+            latest_raw = (
+                fresh_raw.sort_values("timestamp")
+                .groupby("pod_name", sort=False)
+                .tail(1)
+            )
+            observed_pods = set(latest_raw["pod_name"].astype(str))
+            missing_pods = sorted(expected_pods - observed_pods)
+            if missing_pods:
+                raise RuntimeError(
+                    "current workload pods have no fresh Prometheus sample: "
+                    f"{missing_pods[:12]}"
+                )
+            latest_finite = np.isfinite(
+                latest_raw[BASE_METRIC_COLS].to_numpy(dtype=float)
+            ).all(axis=1)
+            incomplete_pods = sorted(
+                latest_raw.loc[~latest_finite, "pod_name"].astype(str).unique().tolist()
+            )
+            if incomplete_pods:
+                raise RuntimeError(
+                    "current workload pod telemetry is incomplete; refusing a partial-replica "
+                    f"service snapshot: {incomplete_pods[:12]}"
+                )
+
             # Discard incomplete samples. Keep each pod's last contiguous segment
             # so rolling and delta calculations never bridge a telemetry gap.
-            raw = raw[np.isfinite(raw[BASE_METRIC_COLS].to_numpy(dtype=float)).all(axis=1)].copy()
+            finite_rows = np.isfinite(raw[BASE_METRIC_COLS].to_numpy(dtype=float)).all(axis=1)
+            incomplete_count = int((~finite_rows).sum())
+            if incomplete_count:
+                status["degraded_features"].append(f"incomplete_pod_samples:{incomplete_count}")
+            raw = raw.loc[finite_rows].copy()
             contiguous = []
             for _, pod_rows in raw.groupby("pod_name", sort=False):
                 pod_rows = pod_rows.sort_values("timestamp").copy()
@@ -470,6 +555,7 @@ class PandasMetricProcessor:
             raw = pd.concat(contiguous, ignore_index=True)
             raw["service_name"] = raw["pod_name"].map(extract_service_name)
             raw["pod_restarts"] = raw["pod_restarts"].clip(lower=0)
+            raw["telemetry_complete"] = 1
 
             engineer = FeatureEngineer()
             featured = engineer.add_delta_features(raw)
@@ -479,7 +565,6 @@ class PandasMetricProcessor:
             featured = engineer.add_cpu_zscore_per_pod(featured)
             featured = engineer.add_anomaly_score(featured)
 
-            now = pd.Timestamp(datetime.utcnow())
             if featured.empty:
                 raise RuntimeError("no complete pod samples remain after telemetry alignment")
 
@@ -493,18 +578,38 @@ class PandasMetricProcessor:
                 cluster_latest_ts = featured["timestamp"].max()
                 raise RuntimeError(f"telemetry is stale (latest: {cluster_latest_ts}, now: {now})")
 
-            # Take the latest available sample for each service
-            latest_by_service = recent.sort_values("timestamp").groupby("service_name", sort=False).tail(1)
-            present_services = set(latest_by_service["service_name"])
-            missing_services = sorted(set(SERVICE_NAMES) - present_services)
-            if missing_services:
-                raise RuntimeError(f"live service coverage incomplete: {missing_services}")
+            latest_by_pod = recent.sort_values("timestamp").groupby("pod_name", sort=False).tail(1)
+            historical_by_pod = featured.sort_values("timestamp").groupby("pod_name", sort=False).tail(1)
+            snapshot = {}
+            degraded_services = []
+            for service in SERVICE_NAMES:
+                service_rows = latest_by_pod.loc[latest_by_pod["service_name"] == service]
+                if service_rows.empty:
+                    # During a confirmed crash, current readiness is authoritative
+                    # while resource features remain last-known observations.
+                    if readiness_map[service] >= 0.999:
+                        raise RuntimeError(
+                            f"pod telemetry missing for ready service {service}; "
+                            "refusing stale metrics that could look normal"
+                        )
+                    service_rows = historical_by_pod.loc[historical_by_pod["service_name"] == service]
+                    degraded_services.append(service)
+                if service_rows.empty:
+                    raise RuntimeError(
+                        f"no complete pod telemetry in lookback for {service}; refusing a zero-filled GNN node"
+                    )
+                aggregated = aggregate_service_rows(service_rows, MODEL_FEATURE_COLS)
+                metrics = {
+                    feature: float(aggregated[idx])
+                    for idx, feature in enumerate(MODEL_FEATURE_COLS)
+                }
+                metrics["service_ready_ratio"] = readiness_map[service]
+                snapshot[service] = metrics
 
-            service_snapshot = latest_by_service.groupby("service_name")[MODEL_FEATURE_COLS].mean()
-            snapshot = {
-                service: {feature: float(service_snapshot.loc[service, feature]) for feature in MODEL_FEATURE_COLS}
-                for service in SERVICE_NAMES
-            }
+            if degraded_services:
+                status["degraded_features"].append(
+                    "stale_pod_metrics:" + ",".join(degraded_services)
+                )
             if any(not np.isfinite(value) for metrics in snapshot.values() for value in metrics.values()):
                 raise RuntimeError("derived feature snapshot contains NaN or infinite values")
 
@@ -513,7 +618,7 @@ class PandasMetricProcessor:
                 "feature_count": len(MODEL_FEATURE_COLS),
                 "service_count": len(snapshot),
                 "reason": "ok" if not status["degraded_features"] else "partial_telemetry_gaps",
-                "snapshot_timestamp": latest_by_service["timestamp"].max().isoformat(),
+                "snapshot_timestamp": latest_by_pod["timestamp"].max().isoformat(),
             })
             self.last_gnn_snapshot_status = status
             return snapshot, status

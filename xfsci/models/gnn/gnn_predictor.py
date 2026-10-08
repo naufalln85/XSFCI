@@ -4,7 +4,7 @@ XFSCI GNN Predictor - Layer 2: Cloud Intelligence Inference
 ============================================================
 Modul inferensi real-time untuk GNN (DualHeadGATv2):
   1. Memuat bobot model terlatih (gnn_best.pt)
-  2. Mengonstruksi tensor fitur [11, 21] dari metrik seluruh service cluster
+  2. Mengonstruksi tensor fitur [11, F] dari metrik seluruh service cluster
   3. Menjalankan forward pass GNN (< 3ms di CPU)
   4. Menghasilkan objek MLPrediction (Action Schema) yang siap
       dikonsumsi langsung oleh Orchestrator & Decision Agent (Antigravity).
@@ -45,6 +45,7 @@ from models.gnn.graph_dataset import (
     extract_service_name,
 )
 from models.gnn.gnn_model import DualHeadGATv2
+from models.gnn.decision_policy import apply_physical_guardrails
 
 # Mapping dari GNN label ke AnomalyType Action Schema
 GNN_LABEL_TO_ANOMALY_TYPE = {
@@ -171,13 +172,13 @@ class GNNPredictor:
 
     def build_feature_tensor_from_metrics(self, current_metrics_map: Dict[str, Dict[str, float]]) -> torch.Tensor:
         """
-        Mengonstruksi tensor input [11, 21] dari snapshot metrik real-time (V2).
+        Mengonstruksi tensor input [11, F] dari snapshot metrik real-time.
         
         Args:
           current_metrics_map: Dict {service_name: {metric_col: float_val}}
           
         Returns:
-          Tensor [11, 21] ternormalisasi
+          Tensor [11, F] ternormalisasi
         """
         num_features = len(NORMALIZED_FEATURE_COLS)
         x_matrix = np.zeros((len(SERVICE_NAMES), num_features), dtype=np.float32)
@@ -234,7 +235,7 @@ class GNNPredictor:
 
         start_time = time.time()
 
-        # Model dilatih dengan snapshot lengkap 11 service × 21 fitur. Jangan
+        # Model dilatih dengan snapshot lengkap 11 service × F fitur. Jangan
         # menjalankan GNN dengan node/kolom kosong yang akan tampak seperti nilai 0.
         if not current_metrics_map:
             logger.warning("GNN inference skipped: no live metrics snapshot was provided")
@@ -296,7 +297,7 @@ class GNNPredictor:
                 f"Missing services={missing_services}; "
                 f"services with missing features={incomplete_services}; "
                 f"invalid values={malformed_features}. "
-                "Expected all 11 services with 21 model features; using the orchestrator's non-GNN fallback."
+                f"Expected all 11 services with {len(ordered_features)} model features; using the orchestrator's non-GNN fallback."
             )
             return None
 
@@ -315,15 +316,15 @@ class GNNPredictor:
         cluster_risk = float(graph_urgency.squeeze().item())
 
         raw_features = x_tensor.cpu().numpy()
-        # V2: Use NORMALIZED_FEATURE_COLS directly (21 features sorted)
+        # Use NORMALIZED_FEATURE_COLS directly in contract order.
         _sorted_feats = sorted(NORMALIZED_FEATURE_COLS)
         idx_anomaly = _sorted_feats.index("anomaly_score_raw_norm")
-        idx_cpu = _sorted_feats.index("cpu_usage_norm")
-        idx_pod_restarts = _sorted_feats.index("pod_restarts_norm")
         idx_restart_delta = _sorted_feats.index("restart_delta_norm")
         idx_mem_slope = _sorted_feats.index("memory_slope_12_norm")
         idx_cpu_zscore = _sorted_feats.index("cpu_zscore_pod_norm")
-        idx_net_asym = _sorted_feats.index("net_asymmetry_norm")
+        idx_latency = _sorted_feats.index("request_latency_p95_ms_norm")
+        idx_ready = _sorted_feats.index("service_ready_ratio_norm")
+        feature_index = {name: idx for idx, name in enumerate(_sorted_feats)}
 
         # Diagnosis Target Pod (Hierarchical Gated + Physical Guardrails V2)
         target_probs = node_probs[target_idx].cpu().numpy().copy()
@@ -331,16 +332,11 @@ class GNNPredictor:
             pred_label_id = 0
             confidence = float(1.0 - cluster_risk)
             anomaly_type = AnomalyType.NORMAL
+            target_probs[1:] = 0.0
         else:
-            # Physical Guardrail V2 checks on target pod:
-            if raw_features[target_idx, idx_pod_restarts] == 0 and raw_features[target_idx, idx_restart_delta] == 0:
-                target_probs[3] = 0.0  # Hapus kemungkinan Pod Crash
-            if raw_features[target_idx, idx_cpu] < 0.05:
-                target_probs[1] = 0.0  # Hapus kemungkinan CPU Stress
-            if raw_features[target_idx, idx_mem_slope] <= 0.01:
-                target_probs[2] = 0.0  # Hapus kemungkinan Memory Leak jika slope <= 0
-            if raw_features[target_idx, idx_net_asym] < 0.03:
-                target_probs[4] = 0.0  # Hapus kemungkinan Network Latency jika traffic simetris
+            target_probs = apply_physical_guardrails(
+                target_probs, raw_features[target_idx], feature_index
+            )
 
             pred_label_id = int(np.argmax(target_probs))
             confidence = float(target_probs[pred_label_id])
@@ -355,11 +351,12 @@ class GNNPredictor:
         # Root Cause Analysis V2: Hybrid scoring (GNN + Enriched Local Features)
         gnn_anomaly = 1.0 - node_probs[:, 0].cpu().numpy()
         local_scores = (
-            0.25 * raw_features[:, idx_anomaly] +
-            0.20 * raw_features[:, idx_cpu_zscore] +
-            0.20 * raw_features[:, idx_restart_delta] +
-            0.20 * raw_features[:, idx_mem_slope] +
-            0.15 * raw_features[:, idx_net_asym]
+            0.20 * raw_features[:, idx_anomaly] +
+            0.15 * raw_features[:, idx_cpu_zscore] +
+            0.15 * raw_features[:, idx_restart_delta] +
+            0.15 * raw_features[:, idx_mem_slope] +
+            0.20 * raw_features[:, idx_latency] +
+            0.15 * (1.0 - raw_features[:, idx_ready])
         )
         # Hybrid: 25% GNN + 75% lokal (mengatasi graph contamination)
         hybrid_scores = 0.25 * gnn_anomaly + 0.75 * local_scores
@@ -410,7 +407,7 @@ if __name__ == "__main__":
     if pred is None:
         logger.warning(
             "No prediction was produced: this entry point needs a complete live "
-            "11-service × 21-feature snapshot. The no-input dummy call is not an accuracy test."
+            f"11-service × {len(NORMALIZED_FEATURE_COLS)}-feature snapshot. The no-input dummy call is not an accuracy test."
         )
         raise SystemExit(0)
     print(f"\nMLPrediction Result:")

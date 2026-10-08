@@ -45,10 +45,10 @@ Prometheus scrape targets.
 `Error`; it is not the former HTTP 4xx/5xx ratio. The feature contract also uses
 a two-minute request-rate window and records four services without server-span
 instrumentation as explicit zero-valued trace features. These semantics are
-versioned as `xfsci-gnn-21f-online-v4`. Recollect and label training data,
+versioned as `xfsci-gnn-23f-online-v5`. Recollect and label training data,
 regenerate the feature contract and scaler, and retrain the GNN before enabling
-inference. The feature-version guard rejects v3 checkpoints and preprocessing
-artifacts.
+inference. The feature-version guard rejects checkpoints and preprocessing
+artifacts from any earlier pipeline version.
 
 `adservice`, `cartservice`, `redis-cart`, and `shippingservice` currently have no
 server-span instrumentation in this Online Boutique v0.10.1 deployment. Their

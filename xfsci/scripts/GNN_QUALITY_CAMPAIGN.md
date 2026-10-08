@@ -10,13 +10,12 @@ take more than 7.5 hours.
 
 ## Before the run
 
-1. Publish commit `566793f` to the branch used by the VM before running
-   `git pull`; it restores the v4 contract that matches the processed data and
-   checkpoint. Do not expect `git pull` to fetch uncommitted local changes.
-2. After pulling, verify that the code and `data/processed/feature_contract.json`
-   both report `xfsci-gnn-21f-online-v4`. The campaign repeats this check and
-   stops before collection if they differ. Keep the existing v4 scaler and
-   checkpoint; do not retrain on the same split just to resolve this mismatch.
+1. Publish this code change to the branch used by the VM, then pull it with
+   `git pull --ff-only`. A pull does not fetch uncommitted local changes.
+2. Verify that the code reports `xfsci-gnn-23f-online-v5` and 23 features.
+   Existing v4 data, scaler, and checkpoint are stale. The campaign keeps an
+   archive, collects new raw sessions, then creates a new scaler and dataset.
+   Do not reuse old cleaned/processed sessions or resume a v4 campaign.
 3. Stop the XFSCI orchestrator and any other metrics scraper. The campaign
    checks for these processes and refuses to start if it finds one.
 4. Confirm the current Kubernetes context is the intended test cluster and
@@ -53,9 +52,23 @@ python3 scripts/run_gnn_quality_campaign.py \
 ```
 
 The runner makes at most 24 checkout transactions per session, waits 15
-seconds between transactions, and varies the capture-to-fault delay between sessions. It writes
-UTC fault start/end markers, and automatically labels each session with its
-own `session_id`. It will not use `--merge-all` or synthetic samples.
+seconds between transactions, and varies the capture-to-fault delay between
+sessions. It writes UTC fault markers and automatically labels each session
+with its own `session_id`. The crash injector deletes five individually chosen
+pods at three-minute intervals and records service, pod name, UID, node, time,
+and Kubernetes event reason. CPU, memory, and latency labels require measured
+telemetry changes on the injector's actual node. A fault with no observed
+signal receives no fault labels; the held-out support gate then prevents an
+unsupported model from being accepted. The runner will not use `--merge-all`
+or synthetic samples.
+
+The read-only preflight checks the v5 telemetry sources, including service
+readiness and trace latency, verifies fresh complete samples for every current
+workload pod, and refuses partial-replica snapshots without running GNN inference.
+The scaler is fitted on complete service aggregates so its ranges match the
+replica aggregation consumed by the model. It may see an old
+processed feature contract before collection; it archives that artifact and
+builds a new v5 scaler only after independent sessions have been collected.
 
 The default quality gates require at least 20 held-out node samples for every
 label, cluster anomaly accuracy of at least 99%, Top-3 RCA of at least 98%, and

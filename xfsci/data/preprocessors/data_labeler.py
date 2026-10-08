@@ -56,6 +56,14 @@ WORKER3_PODS = ["checkoutservice", "currencyservice", "emailservice", "shippings
 POD_CRASH_TARGETS = ["frontend", "cartservice", "recommendationservice", "paymentservice"]
 
 
+def _utc_naive(value):
+    """Normalize CSV/log timestamps to comparable UTC-naive pandas timestamps."""
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("UTC").tz_localize(None)
+    return ts
+
+
 def get_pod_prefix(pod_name: str) -> str:
     """Ekstrak nama service dari nama pod lengkap."""
     parts = pod_name.split("-")
@@ -71,7 +79,7 @@ class XFSCIDataLabeler:
     def load_raw_csv(self, csv_path: Path) -> pd.DataFrame:
         logger.info(f"Loading: {csv_path.name}")
         df = pd.read_csv(csv_path)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
         logger.info(f"  Rows: {len(df):,} | Pods: {df['pod_name'].nunique()}")
         logger.info(f"  Range: {df['timestamp'].min()} -> {df['timestamp'].max()}")
         return df
@@ -79,44 +87,122 @@ class XFSCIDataLabeler:
     def apply_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df["label"] = LABEL_NORMAL
-        ts = df["timestamp"]
+        ts = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
+        df["timestamp"] = ts
         pod_prefix = df["pod_name"].apply(get_pod_prefix)
 
         # Prioritas: NORMAL < NET_LATENCY < POD_CRASH < MEMORY_LEAK < CPU_STRESS
+        def window_mask(window):
+            start, end = _utc_naive(window["start"]), _utc_naive(window["end"])
+            mask = (ts >= start) & (ts <= end)
+            node = str(window.get("node_name") or "").strip()
+            if node and "node_name" in df.columns:
+                mask &= df["node_name"].astype(str).eq(node)
+            return mask
+
+        def complete_rows(mask):
+            if "telemetry_complete" in df.columns:
+                return mask & pd.to_numeric(df["telemetry_complete"], errors="coerce").fillna(0).eq(1)
+            return mask
+
+        def baseline_by_pod(window, metric):
+            start = _utc_naive(window["start"])
+            base_mask = (ts >= start - pd.Timedelta(minutes=5)) & (ts < start)
+            node = str(window.get("node_name") or "").strip()
+            if node and "node_name" in df.columns:
+                base_mask &= df["node_name"].astype(str).eq(node)
+            if "telemetry_complete" in df.columns:
+                base_mask &= pd.to_numeric(df["telemetry_complete"], errors="coerce").fillna(0).eq(1)
+            values = pd.to_numeric(df.loc[base_mask, metric], errors="coerce")
+            baseline = values.groupby(df.loc[base_mask, "pod_name"]).median()
+            mad = values.groupby(df.loc[base_mask, "pod_name"]).apply(
+                lambda series: (series - series.median()).abs().median()
+            )
+            return baseline, mad
+
+        def apply_observed_node_fault(fault_name, label, metric, predicate):
+            window = self.fault_windows.get(fault_name)
+            if not window:
+                return
+            if not window.get("node_name"):
+                logger.warning(f"  {fault_name}: no injector node recorded; refusing broad service labeling")
+                return
+            in_scope = complete_rows(window_mask(window))
+            baseline, mad = baseline_by_pod(window, metric)
+            per_pod_mask = pd.Series(False, index=df.index)
+            for pod_name, indices in df.loc[in_scope].groupby("pod_name").groups.items():
+                if pod_name not in baseline.index:
+                    continue
+                rows = df.loc[indices]
+                per_pod_mask.loc[indices] = predicate(rows, float(baseline[pod_name]), float(mad.get(pod_name, 0.0)))
+            df.loc[per_pod_mask, "label"] = label
+            logger.info(f"  {fault_name:<16}: {int(per_pod_mask.sum()):>5} rows with measured {metric} change")
+
         if "net_latency" in self.fault_windows:
-            w = self.fault_windows["net_latency"]
-            target_pods = w.get("target_pods") or WORKER3_PODS
-            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(target_pods)
-            df.loc[mask, "label"] = LABEL_NET_LATENCY
-            logger.info(f"  NETWORK_LATENCY : {mask.sum():>5} rows")
+            window = self.fault_windows["net_latency"]
+            if "request_latency_p95_ms" in df.columns:
+                apply_observed_node_fault(
+                    "net_latency", LABEL_NET_LATENCY, "request_latency_p95_ms",
+                    lambda rows, baseline, _mad: (
+                        pd.to_numeric(rows["request_latency_p95_ms"], errors="coerce")
+                        >= max(100.0, baseline + 50.0, baseline * 1.5)
+                    ),
+                )
+            else:
+                logger.warning("  net_latency: request_latency_p95_ms missing; rows remain unlabeled")
 
         if "pod_crash" in self.fault_windows:
             w = self.fault_windows["pod_crash"]
-            target_pods = w.get("target_pods") or POD_CRASH_TARGETS
-            in_window = (ts >= w["start"]) & (ts <= w["end"])
-            # Hanya beri label POD_CRASH pada pod target yang restart-nya > 0 jika ada data restart,
-            # atau setidaknya terbatas pada target_pods (bukan 11 pod seluruh cluster!)
-            has_restarts = ((df.loc[in_window, "pod_restarts"] > 0) & pod_prefix.isin(target_pods)).any()
-            if has_restarts:
-                mask = in_window & (df["pod_restarts"] > 0) & pod_prefix.isin(target_pods)
+            events = w.get("events", [])
+            crash_mask = pd.Series(False, index=df.index)
+            confirmed_events = 0
+            for event in events:
+                service = str(event.get("service", "")).strip()
+                event_time = _utc_naive(event["timestamp"])
+                # The deleted pod itself is the intervention target; only
+                # retain it if model inputs show readiness loss or restarts.
+                event_mask = (
+                    pod_prefix.eq(service)
+                    & (ts >= event_time)
+                    & (ts <= event_time + pd.Timedelta(seconds=20))
+                )
+                event_rows = df.loc[event_mask]
+                observed = pd.Series(False, index=df.index)
+                if not event_rows.empty:
+                    observed.loc[event_rows.index] = False
+                    if "service_ready_ratio" in df:
+                        readiness = pd.to_numeric(
+                            event_rows["service_ready_ratio"], errors="coerce"
+                        )
+                        observed.loc[event_rows.index] |= readiness.lt(0.999).fillna(False)
+                    if "pod_restarts" in df:
+                        restarts = pd.to_numeric(event_rows["pod_restarts"], errors="coerce")
+                        observed.loc[event_rows.index] |= restarts.gt(0).fillna(False)
+                    confirmed_mask = event_mask & observed
+                if confirmed_mask.any():
+                    confirmed_events += 1
+                    crash_mask |= confirmed_mask
+            if events:
+                df.loc[crash_mask, "label"] = LABEL_POD_CRASH
+                logger.info(
+                    f"  POD_CRASH       : {int(crash_mask.sum()):>5} rows; "
+                    f"{confirmed_events}/{len(events)} deletes had observable readiness/restart evidence"
+                )
             else:
-                mask = in_window & pod_prefix.isin(target_pods)
-            df.loc[mask, "label"] = LABEL_POD_CRASH
-            logger.info(f"  POD_CRASH       : {mask.sum():>5} rows")
+                logger.warning("  POD_CRASH       : no exact pod-delete records; refusing time-window fallback labels")
 
         if "memory_leak" in self.fault_windows:
-            w = self.fault_windows["memory_leak"]
-            target_pods = w.get("target_pods") or WORKER2_PODS
-            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(target_pods)
-            df.loc[mask, "label"] = LABEL_MEMORY_LEAK
-            logger.info(f"  MEMORY_LEAK     : {mask.sum():>5} rows")
+            def memory_increased(rows, baseline, _mad):
+                values = pd.to_numeric(rows["memory_usage"], errors="coerce")
+                threshold = max(5 * 1024**2, baseline * 0.03)
+                return values >= baseline + threshold
+            apply_observed_node_fault("memory_leak", LABEL_MEMORY_LEAK, "memory_usage", memory_increased)
 
         if "cpu_stress" in self.fault_windows:
-            w = self.fault_windows["cpu_stress"]
-            target_pods = w.get("target_pods") or WORKER2_PODS
-            mask = (ts >= w["start"]) & (ts <= w["end"]) & pod_prefix.isin(target_pods)
-            df.loc[mask, "label"] = LABEL_CPU_STRESS
-            logger.info(f"  CPU_STRESS      : {mask.sum():>5} rows")
+            def cpu_increased(rows, baseline, mad_value):
+                threshold = max(0.05, baseline * 1.5, baseline + 4.4478 * mad_value)
+                return pd.to_numeric(rows["cpu_usage"], errors="coerce") >= threshold
+            apply_observed_node_fault("cpu_stress", LABEL_CPU_STRESS, "cpu_usage", cpu_increased)
 
         return df
 
@@ -225,10 +311,41 @@ def windows_from_fault_log(log_path: Path, expected_session_id: str = None) -> d
     pattern = re.compile(
         r"XFSCI_FAULT_EVENT session_id=(?P<session>\S+) fault=(?P<fault>\S+) "
         r"phase=(?P<phase>start|end) timestamp=(?P<timestamp>\S+) targets=(?P<targets>\S+)"
+        r"(?: node=(?P<node>\S+))?"
+    )
+    crash_pattern = re.compile(
+        r"XFSCI_POD_EVENT session_id=(?P<session>\S+) fault=pod_crash "
+        r"timestamp=(?P<timestamp>\S+) service=(?P<service>\S+) "
+        r"pod=(?P<pod>\S+) uid=(?P<uid>\S+) node=(?P<node>\S+) reason=(?P<reason>\S+)"
     )
     events = {}
+    crash_events = []
     with log_path.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
+            crash_match = crash_pattern.search(line)
+            if crash_match:
+                item = crash_match.groupdict()
+                if expected_session_id and item["session"] != expected_session_id:
+                    if item["session"] == "manual":
+                        logger.warning("Crash event session is 'manual'; accepting for the requested session")
+                    else:
+                        raise ValueError(
+                            f"Crash event session {item['session']!r} does not match "
+                            f"--session-id {expected_session_id!r}"
+                        )
+                if item["service"] not in POD_CRASH_TARGETS:
+                    raise ValueError(f"Crash event has an unapproved service target: {item['service']!r}")
+                if get_pod_prefix(item["pod"]) != item["service"] or not item["uid"]:
+                    raise ValueError("Crash event pod/service identity is inconsistent or UID is missing")
+                crash_events.append({
+                    "timestamp": _utc_naive(item["timestamp"]),
+                    "service": item["service"],
+                    "pod": item["pod"],
+                    "uid": item["uid"],
+                    "node_name": item["node"],
+                    "reason": item["reason"],
+                })
+                continue
             match = pattern.search(line)
             if not match:
                 continue
@@ -245,8 +362,9 @@ def windows_from_fault_log(log_path: Path, expected_session_id: str = None) -> d
                     )
             fault = item["fault"]
             events.setdefault(fault, {})[item["phase"]] = {
-                "time": pd.to_datetime(item["timestamp"], utc=True).tz_localize(None),
+                "time": _utc_naive(item["timestamp"]),
                 "target_pods": [name for name in item["targets"].split(",") if name],
+                "node_name": "" if item.get("node") in (None, "-") else item.get("node"),
             }
 
     required = {"cpu_stress", "memory_leak", "pod_crash", "net_latency"}
@@ -263,11 +381,20 @@ def windows_from_fault_log(log_path: Path, expected_session_id: str = None) -> d
             raise ValueError(f"Fault log end time is not after start time for {fault}")
         if phases["start"]["target_pods"] != phases["end"]["target_pods"]:
             raise ValueError(f"Fault target list changed during {fault}")
+        if phases["start"].get("node_name") != phases["end"].get("node_name"):
+            raise ValueError(f"Fault injector node changed during {fault}")
         windows[fault] = {
             "start": phases["start"]["time"],
             "end": phases["end"]["time"],
             "target_pods": phases["start"]["target_pods"],
-        }
+                "node_name": phases["start"].get("node_name"),
+            }
+    windows["pod_crash"]["events"] = crash_events
+    for event in crash_events:
+        if not windows["pod_crash"]["start"] <= event["timestamp"] <= windows["pod_crash"]["end"]:
+            raise ValueError(f"Crash event for {event['pod']} falls outside the recorded pod_crash window")
+    if not crash_events:
+        logger.warning("Fault log contains no exact pod-delete events; crash rows will remain unknown")
     return windows
 
 
@@ -368,7 +495,14 @@ def main():
     # Simpan fault_windows.json
     windows_json = PROCESSED_DIR / "fault_windows.json"
     serialized = {
-        k: {"start": str(v["start"]), "end": str(v["end"]), "target_pods": v.get("target_pods")}
+        k: {
+            "start": str(v["start"]), "end": str(v["end"]),
+            "target_pods": v.get("target_pods"), "node_name": v.get("node_name"),
+            "events": [
+                {**event, "timestamp": str(event["timestamp"])}
+                for event in v.get("events", [])
+            ],
+        }
         for k, v in fault_windows.items()
     }
     if args.session_id:

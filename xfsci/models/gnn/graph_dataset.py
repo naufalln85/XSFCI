@@ -8,7 +8,7 @@ graf teratribusi PyTorch Geometric (torch_geometric.data.Data).
 
 Fitur Graf:
   - Nodes (11 services): Online Boutique microservices
-  - Node Features (21): Metrik ternormalisasi [0, 1]
+  - Node Features (feature-contract driven): Metrik ternormalisasi [0, 1]
   - Edges:
       1. Network Service Dependencies (Bidirectional)
       2. Host Co-location Edges (Node Worker 1, 2, 3)
@@ -25,6 +25,7 @@ Split Data:
 import os
 import sys
 import glob
+import hashlib
 import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
@@ -38,8 +39,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.gnn.feature_contract import FEATURE_PIPELINE_VERSION
+from models.gnn.feature_contract import (
+    FEATURE_PIPELINE_VERSION,
+    MODEL_FEATURE_COLS,
+    SERVICE_NAMES,
+    extract_service_name,
+)
 from models.gnn.session_split import split_session_ids
+from models.gnn.service_aggregation import aggregate_service_rows
 
 try:
     from torch_geometric.data import Data, Dataset
@@ -106,20 +113,6 @@ except ImportError:
 # CANONICAL SERVICES & TOPOLOGY DEFINITIONS
 # ============================================================
 
-SERVICE_NAMES: List[str] = [
-    "frontend",
-    "cartservice",
-    "productcatalogservice",
-    "redis-cart",
-    "checkoutservice",
-    "currencyservice",
-    "emailservice",
-    "shippingservice",
-    "adservice",
-    "recommendationservice",
-    "paymentservice",
-]
-
 NUM_SERVICES = len(SERVICE_NAMES)
 SERVICE_TO_IDX: Dict[str, int] = {name: idx for idx, name in enumerate(SERVICE_NAMES)}
 IDX_TO_SERVICE: Dict[int, str] = {idx: name for idx, name in enumerate(SERVICE_NAMES)}
@@ -158,58 +151,10 @@ CANONICAL_CALL_DEPENDENCIES: List[Tuple[str, str]] = [
     ("cartservice", "redis-cart"),
 ]
 
-# 21 Fitur ternormalisasi yang dihasilkan oleh feature_engineer.py (V2 SOTA)
-NORMALIZED_FEATURE_COLS: List[str] = [
-    "cpu_usage_norm",
-    "memory_usage_norm",
-    "memory_usage_percent_norm",
-    "pod_restarts_norm",
-    "net_rx_bytes_norm",
-    "net_tx_bytes_norm",
-    "request_rate_norm",
-    "error_rate_norm",
-    "cpu_delta_norm",
-    "memory_delta_norm",
-    "memory_growth_rate_norm",
-    "cpu_rolling_mean_5_norm",
-    "cpu_rolling_std_5_norm",
-    "mem_rolling_mean_5_norm",
-    "restart_delta_norm",
-    "net_total_bytes_norm",
-    "net_rx_tx_ratio_norm",
-    "anomaly_score_raw_norm",
-    # V2 SOTA: Fitur diskriminatif baru
-    "memory_slope_12_norm",   # Rolling OLS slope memory (leak detector)
-    "cpu_zscore_pod_norm",    # Per-pod Z-score CPU (baseline deviation)
-    "net_asymmetry_norm",     # |RX-TX|/(RX+TX) traffic asymmetry
-]
-
-BASE_NUMERIC_COLS: List[str] = [
-    "cpu_usage", "memory_usage", "memory_usage_percent",
-    "pod_restarts", "net_rx_bytes", "net_tx_bytes",
-    "request_rate", "error_rate",
-    "cpu_delta", "memory_delta", "memory_growth_rate",
-    "cpu_rolling_mean_5", "cpu_rolling_std_5", "mem_rolling_mean_5",
-    "restart_delta", "net_total_bytes", "net_rx_tx_ratio",
-    "anomaly_score_raw",
-    # V2 SOTA
-    "memory_slope_12", "cpu_zscore_pod", "net_asymmetry",
-]
-
-
-def extract_service_name(pod_name: str) -> str:
-    """Mengekstrak canonical service name dari pod_name."""
-    pod_lower = str(pod_name).lower().strip()
-    for svc in SERVICE_NAMES:
-        if pod_lower == svc or pod_lower.startswith(f"{svc}-"):
-            return svc
-    # Parsing fallback
-    parts = pod_lower.split("-")
-    if len(parts) >= 3:
-        candidate = "-".join(parts[:-2])
-        if candidate in SERVICE_TO_IDX:
-            return candidate
-    return pod_lower
+# Feature order always comes from the single training/live contract.
+NORMALIZED_FEATURE_COLS: List[str] = sorted(f"{name}_norm" for name in MODEL_FEATURE_COLS)
+BASE_NUMERIC_COLS: List[str] = list(MODEL_FEATURE_COLS)
+IGNORE_LABEL = -100
 
 
 # ============================================================
@@ -285,7 +230,7 @@ class MicroserviceGraphDataset(Dataset):
     Dataset sequence snapshot graf untuk GNN.
     
     Setiap sampel Data berisi:
-      x         : Tensor [11, 21] fitur metrik per node
+      x         : Tensor [11, F] fitur metrik per node
       edge_index: Tensor [2, E] relasi topologi graf
       y         : Tensor [11] label anomali per node (0 s/d 4)
       y_graph   : Tensor [1] skor urgensi global (0.0 jika semua normal, 1.0 jika ada fault)
@@ -318,41 +263,37 @@ def create_graph_snapshots_from_csv(csv_path: Path,
     logger.info(f"Membaca dataset: {csv_path.name}...")
     df = pd.read_csv(csv_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+    required_quality = {"telemetry_complete", "session_id", "label_id"}
+    missing_quality = sorted(required_quality - set(df.columns))
+    if missing_quality:
+        raise ValueError(
+            f"Dataset lacks v5 sample-quality fields {missing_quality}; "
+            "recollect and rerun labeling/feature engineering."
+        )
+    label_values = pd.to_numeric(df["label_id"], errors="coerce")
+    df["label_id"] = label_values.where(label_values.between(0, len(LABEL_MAP) - 1), IGNORE_LABEL).fillna(IGNORE_LABEL).astype(int)
     df["service_name"] = df["pod_name"].apply(extract_service_name)
 
     # Filter hanya pod microservice yang valid
     df = df[df["service_name"].isin(SERVICE_TO_IDX)].copy()
 
-    # Pastikan label_id tersedia
-    if "label_id" not in df.columns:
-        if "label" in df.columns:
-            df["label_id"] = df["label"].map(LABEL_MAP).fillna(0).astype(int)
-        else:
-            df["label_id"] = 0
-
-    # Pastikan fitur ternormalisasi tersedia
-    features_to_use = []
-    for col in NORMALIZED_FEATURE_COLS:
-        if col in df.columns:
-            features_to_use.append(col)
-    
-    if len(features_to_use) < len(NORMALIZED_FEATURE_COLS):
-        logger.warning(f"Hanya {len(features_to_use)}/{len(NORMALIZED_FEATURE_COLS)} kolom *_norm ditemukan. "
-                       f"Melakukan min-max fallback.")
-        for base_col in BASE_NUMERIC_COLS:
-            norm_col = f"{base_col}_norm"
-            if norm_col not in df.columns and base_col in df.columns:
-                mn, mx = df[base_col].min(), df[base_col].max()
-                df[norm_col] = 0.0 if mx == mn else ((df[base_col] - mn) / (mx - mn)).clip(0, 1)
-                features_to_use.append(norm_col)
-
-    features_to_use = sorted(list(set(features_to_use)))
-    if features_to_use != sorted(NORMALIZED_FEATURE_COLS):
+    features_to_use = sorted(NORMALIZED_FEATURE_COLS)
+    missing_features = sorted(set(features_to_use) - set(df.columns))
+    if missing_features:
         raise ValueError(
             f"Dataset tidak memenuhi kontrak fitur {FEATURE_PIPELINE_VERSION}: "
-            f"ditemukan {len(features_to_use)}/{len(NORMALIZED_FEATURE_COLS)} fitur ternormalisasi. "
+            f"missing={missing_features}. "
             "Jalankan ulang feature_engineer.py sebelum melatih GNN."
         )
+    if scaler_path is None:
+        scaler_path = PROJECT_ROOT / "data" / "processed" / "scaler_params.json"
+    if not scaler_path.exists():
+        raise FileNotFoundError(f"Scaler parameters missing: {scaler_path}; rerun feature_engineer.py")
+    with scaler_path.open("r", encoding="utf-8") as handle:
+        scaler_params = json.load(handle)
+    missing_scaler = sorted(set(BASE_NUMERIC_COLS) - set(scaler_params))
+    if missing_scaler:
+        raise ValueError(f"Scaler is incomplete for {FEATURE_PIPELINE_VERSION}: {missing_scaler}")
     num_features = len(features_to_use)
     logger.info(f"Menggunakan {num_features} fitur node: {features_to_use[:4]} ...")
 
@@ -387,33 +328,75 @@ def create_graph_snapshots_from_csv(csv_path: Path,
             last_known_features = {svc: np.zeros(num_features, dtype=np.float32) for svc in SERVICE_NAMES}
             last_session = session_val
         x_matrix = np.zeros((NUM_SERVICES, num_features), dtype=np.float32)
-        y_vector = np.zeros(NUM_SERVICES, dtype=np.int64)
+        y_vector = np.full(NUM_SERVICES, IGNORE_LABEL, dtype=np.int64)
 
-        # Gabungkan replica dengan mean agar satu service menjadi satu node,
-        # sama dengan snapshot runtime yang dikirim ke GNN.
+        # Aggregate only complete replica telemetry. Max-risk features preserve
+        # a single affected replica instead of averaging its signal away.
         seen_services = set()
         service_rows = group.groupby("service_name", sort=False)
         for svc, service_group in service_rows:
             svc_idx = SERVICE_TO_IDX[svc]
-            feat_vals = service_group[features_to_use].mean(axis=0).values.astype(np.float32)
-            
-            # Update cache
-            last_known_features[svc] = feat_vals
             seen_services.add(svc)
 
-            x_matrix[svc_idx] = feat_vals
-            y_vector[svc_idx] = int(service_group["label_id"].max())
+            complete_mask = pd.to_numeric(
+                service_group["telemetry_complete"], errors="coerce"
+            ).fillna(0).eq(1)
+            complete_rows = service_group.loc[complete_mask]
+            service_complete = bool(not service_group.empty and complete_mask.all())
+            labels = pd.to_numeric(service_group["label_id"], errors="coerce").dropna().astype(int)
+            event_fault = int(labels[labels > 0].max()) if (labels > 0).any() else None
+
+            if service_complete and not complete_rows.empty:
+                raw_vals = aggregate_service_rows(complete_rows, BASE_NUMERIC_COLS)
+                scaled = {}
+                for column, value in zip(BASE_NUMERIC_COLS, raw_vals):
+                    params = scaler_params[column]
+                    lo, hi = float(params["min"]), float(params["max"])
+                    scaled[f"{column}_norm"] = (
+                        0.0 if hi <= lo else float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
+                    )
+                feat_vals = np.asarray([scaled[column] for column in features_to_use], dtype=np.float32)
+                last_known_features[svc] = feat_vals
+                x_matrix[svc_idx] = feat_vals
+                if event_fault is not None:
+                    y_vector[svc_idx] = event_fault
+            else:
+                # Readiness is an independently measured service signal. Keep
+                # it even when pod metrics are missing; all other model inputs
+                # use last-known telemetry and the node label remains unknown.
+                feat_vals = last_known_features[svc].copy()
+                readiness_col = "service_ready_ratio_norm"
+                if readiness_col in features_to_use and readiness_col in service_group:
+                    readiness_values = pd.to_numeric(
+                        service_group[readiness_col], errors="coerce"
+                    ).dropna()
+                    if not readiness_values.empty:
+                        feat_vals[features_to_use.index(readiness_col)] = float(readiness_values.max())
+                x_matrix[svc_idx] = feat_vals
+                if event_fault is not None:
+                    y_vector[svc_idx] = event_fault
+
+            # A NORMAL class is known only when every replica row for this
+            # service/time bin has complete telemetry. Missing one replica
+            # must not silently turn the service into a normal training target.
+            if service_complete and event_fault is None:
+                known_labels = pd.to_numeric(
+                    service_group["label_id"], errors="coerce"
+                )
+                if known_labels.notna().all() and known_labels.between(0, len(LABEL_MAP) - 1).all():
+                    y_vector[svc_idx] = int(known_labels.max())
 
         # Forward-fill untuk service yang scrape-nya miss di timestamp ini
         for svc in SERVICE_NAMES:
             if svc not in seen_services:
                 svc_idx = SERVICE_TO_IDX[svc]
                 x_matrix[svc_idx] = last_known_features[svc]
-                y_vector[svc_idx] = 0  # Default normal jika miss
 
-        # Graph-level urgency: 0.0 jika semua normal, 1.0 jika ada minimal 1 anomali
-        has_anomaly = (y_vector > 0).any()
-        y_graph = 1.0 if has_anomaly else 0.0
+        # Graph labels are unknown when any node is unknown and no confirmed
+        # fault exists. This avoids turning telemetry gaps into healthy graphs.
+        has_fault = bool((y_vector > 0).any())
+        all_known = bool((y_vector != IGNORE_LABEL).all())
+        y_graph = 1.0 if has_fault else (0.0 if all_known else -1.0)
 
         data_obj = Data(
             x=torch.tensor(x_matrix, dtype=torch.float32),
@@ -491,7 +474,9 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
         logger.info(f"  Train : {len(train_data):>5,} graf ({len(train_data)/total_snapshots*100:4.1f}%)")
         logger.info(f"  Val   : {len(val_data):>5,} graf ({len(val_data)/total_snapshots*100:4.1f}%)")
         logger.info(f"  Test  : {len(test_data):>5,} graf ({len(test_data)/total_snapshots*100:4.1f}%)")
-        logger.info(f"  Test classes: {dict(pd.Series(np.concatenate([s.y.numpy() for s in test_data])).value_counts().sort_index())}")
+        test_labels = np.concatenate([s.y.numpy() for s in test_data])
+        test_labels = test_labels[test_labels != IGNORE_LABEL]
+        logger.info(f"  Test known node classes: {dict(pd.Series(test_labels).value_counts().sort_index())}")
     elif len(unique_sessions) == 2:
         train_data = [s for s in snapshots if s.session_id == unique_sessions[0]]
         test_data = [s for s in snapshots if s.session_id == unique_sessions[1]]
@@ -536,6 +521,8 @@ def build_graph_dataloaders(csv_path: Optional[Path] = None,
         "train_sessions": sorted({s.session_id for s in train_data if getattr(s, "session_id", None) is not None}),
         "validation_sessions": sorted({s.session_id for s in val_data if getattr(s, "session_id", None) is not None}),
         "test_sessions": sorted({s.session_id for s in test_data if getattr(s, "session_id", None) is not None}),
+        "dataset_sha256": hashlib.sha256(csv_path.read_bytes()).hexdigest(),
+        "feature_pipeline_version": FEATURE_PIPELINE_VERSION,
     }
 
     return train_loader, val_loader, test_loader, info

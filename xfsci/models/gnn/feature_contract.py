@@ -3,11 +3,35 @@
 import json
 
 
-FEATURE_PIPELINE_VERSION = "xfsci-gnn-21f-online-v4"
+FEATURE_PIPELINE_VERSION = "xfsci-gnn-23f-online-v5"
+
+SERVICE_NAMES = (
+    "frontend",
+    "cartservice",
+    "productcatalogservice",
+    "redis-cart",
+    "checkoutservice",
+    "currencyservice",
+    "emailservice",
+    "shippingservice",
+    "adservice",
+    "recommendationservice",
+    "paymentservice",
+)
+
+
+def extract_service_name(pod_name: str) -> str:
+    """Map a Kubernetes pod name to one of the canonical service names."""
+    pod_lower = str(pod_name).lower().strip()
+    for service in SERVICE_NAMES:
+        if pod_lower == service or pod_lower.startswith(f"{service}-"):
+            return service
+    return pod_lower
 
 BASE_METRIC_COLS = [
     "cpu_usage", "memory_usage", "memory_usage_percent", "pod_restarts",
     "net_rx_bytes", "net_tx_bytes", "request_rate", "error_rate",
+    "request_latency_p95_ms", "service_ready_ratio",
 ]
 
 DERIVED_FEATURE_COLS = [
@@ -76,6 +100,11 @@ def application_metric_queries(
         'sum by (k8s_pod_name) '
         f'(rate(xfsci_calls_total{{{common},status_code=~"(?i).*error.*"}}[2m]))'
     )
+    latency = (
+        'histogram_quantile(0.95, '
+        f'sum by (le, k8s_pod_name) '
+        f'(rate(xfsci_duration_seconds_bucket{{{common}}}[2m])))'
+    )
     return {
         "request_rate": total,
         # A pod with requests but no error spans has a measured 0 error rate.
@@ -84,4 +113,28 @@ def application_metric_queries(
             f'(({errors}) or (0 * ({total}))) '
             f'/ clamp_min(({total}), 1e-9)'
         ),
+        # p95 server-span duration in milliseconds. Missing histograms are
+        # handled as unknown when request volume is nonzero.
+        "request_latency_p95_ms": f'({latency}) * 1000',
     }
+
+
+def service_readiness_query(namespace: str) -> str:
+    """Return a readiness ratio for Deployments and StatefulSets by service."""
+    ns = json.dumps(str(namespace))
+    deployments = (
+        'sum by (deployment) '
+        f'(kube_deployment_status_replicas_available{{namespace={ns}}}) '
+        '/ clamp_min(sum by (deployment) '
+        f'(kube_deployment_spec_replicas{{namespace={ns}}}), 1)'
+    )
+    statefulsets = (
+        'sum by (statefulset) '
+        f'(kube_statefulset_status_replicas_ready{{namespace={ns}}}) '
+        '/ clamp_min(sum by (statefulset) '
+        f'(kube_statefulset_replicas{{namespace={ns}}}), 1)'
+    )
+    return (
+        f'label_replace(({deployments}), "service", "$1", "deployment", "(.+)") '
+        f'or label_replace(({statefulsets}), "service", "$1", "statefulset", "(.+)")'
+    )

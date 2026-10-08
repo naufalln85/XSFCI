@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only preflight for live Prometheus -> 11 x 21 GNN inference."""
+"""Telemetry-only preflight for the live Prometheus -> GNN feature contract."""
 
 import sys
 from pathlib import Path
@@ -12,14 +12,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from agent.pandas_processor import PandasMetricProcessor
 from models.gnn.feature_contract import FEATURE_PIPELINE_VERSION, MODEL_FEATURE_COLS
 from models.gnn.graph_dataset import SERVICE_NAMES
-from models.gnn.gnn_predictor import GNNPredictor
 
 
 def main() -> int:
     processor = PandasMetricProcessor()
     print(f"Feature pipeline: {FEATURE_PIPELINE_VERSION}")
     try:
-        snapshot, status = processor.get_gnn_feature_snapshot()
+        snapshot, status = processor.get_gnn_feature_snapshot(preflight=True)
     except Exception as exc:
         print(f"BLOCKED: could not build live feature snapshot: {exc}")
         print(f"Snapshot status: {processor.last_gnn_snapshot_status}")
@@ -29,36 +28,31 @@ def main() -> int:
     if not status.get("available"):
         print("BLOCKED: live feature snapshot is incomplete; no GNN inference was run.")
         return 2
-
-    predictor = GNNPredictor()
-    if not predictor.is_ready:
-        print("BLOCKED: checkpoint/scaler is missing or incompatible; retrain the GNN first.")
-        return 3
-
-    tensor = predictor.build_feature_tensor_from_metrics(snapshot).detach().cpu().numpy()
-    if tensor.shape != (len(SERVICE_NAMES), len(MODEL_FEATURE_COLS)):
-        print(f"BLOCKED: wrong model input shape {tensor.shape}.")
+    if len(snapshot) != len(SERVICE_NAMES):
+        print(f"BLOCKED: service count {len(snapshot)}/{len(SERVICE_NAMES)}.")
         return 4
-    if not np.isfinite(tensor).all():
-        print("BLOCKED: model input contains NaN or infinity.")
+    if any(set(metrics) != set(MODEL_FEATURE_COLS) for metrics in snapshot.values()):
+        print("BLOCKED: one or more services do not match the current raw feature schema.")
         return 5
-
-    print(f"Input tensor: shape={tensor.shape}, min={tensor.min():.4f}, max={tensor.max():.4f}")
-    print("Per-feature normalized range across the 11 services:")
-    for index, feature in enumerate(sorted(f"{name}_norm" for name in MODEL_FEATURE_COLS)):
-        values = tensor[:, index]
-        print(f"  {feature:32s} min={values.min():.4f} max={values.max():.4f} nonzero={np.count_nonzero(values)}/11")
-
-    prediction = predictor.predict_target("frontend", current_metrics_map=snapshot)
-    if prediction is None:
-        print("BLOCKED: predictor rejected the snapshot/checkpoint.")
+    invalid = [
+        f"{service}.{feature}"
+        for service, metrics in snapshot.items()
+        for feature, value in metrics.items()
+        if not np.isfinite(float(value))
+    ]
+    if invalid:
+        print(f"BLOCKED: non-finite telemetry: {invalid}")
         return 6
+    for service in SERVICE_NAMES:
+        print(
+            f"{service:28s} features={len(snapshot[service])} "
+            f"ready={snapshot[service]['service_ready_ratio']:.3f} "
+            f"latency_p95_ms={snapshot[service]['request_latency_p95_ms']:.2f}"
+        )
     print(
-        "Read-only inference: "
-        f"anomaly={prediction.anomaly_type.value}, risk={prediction.risk_score:.3f}, "
-        f"confidence={prediction.confidence:.3f}, root_cause={prediction.root_cause_service}"
+        f"PASS: telemetry only; {len(snapshot)} services × {len(MODEL_FEATURE_COLS)} raw features. "
+        "No checkpoint was loaded and no inference was run."
     )
-    print("PASS: full live snapshot was accepted. This is a schema/telemetry check, not an accuracy guarantee.")
     return 0
 
 

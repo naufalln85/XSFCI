@@ -114,6 +114,8 @@ def prometheus_has_traces(prometheus_url: str) -> bool:
 
 def preflight(args: argparse.Namespace, env: dict[str, str], campaign_dir: Path) -> None:
     say("PRE-FLIGHT: checking context, demo namespace, injector permissions, Prometheus, and frontend")
+    os.environ["TARGET_NAMESPACE"] = "demo"
+    os.environ["PROMETHEUS_URL"] = args.prometheus_url
     context = run_capture(["kubectl", "config", "current-context"], campaign_dir / "preflight.log", env)
     if context != args.expected_context:
         raise RuntimeError(
@@ -139,10 +141,9 @@ def preflight(args: argparse.Namespace, env: dict[str, str], campaign_dir: Path)
             f"Fault manifests require nodes labeled xfsci-site=bandung and surabaya; found {sorted(sites)}."
         )
     permissions = [
-        "create pods", "delete pods", "create cronjobs.batch", "delete cronjobs.batch",
-        "create serviceaccounts", "delete serviceaccounts",
-        "create roles.rbac.authorization.k8s.io", "delete roles.rbac.authorization.k8s.io",
-        "create rolebindings.rbac.authorization.k8s.io", "delete rolebindings.rbac.authorization.k8s.io",
+        "create pods", "delete pods", "delete cronjobs.batch",
+        "delete serviceaccounts", "delete roles.rbac.authorization.k8s.io",
+        "delete rolebindings.rbac.authorization.k8s.io",
     ]
     for permission in permissions:
         result = run_capture(
@@ -155,21 +156,22 @@ def preflight(args: argparse.Namespace, env: dict[str, str], campaign_dir: Path)
         raise RuntimeError("Prometheus has no xfsci_calls_total server traces for demo.")
     from agent.pandas_processor import PandasMetricProcessor
     from models.gnn.feature_contract import FEATURE_PIPELINE_VERSION, MODEL_FEATURE_COLS
-    from models.gnn.graph_dataset import SERVICE_NAMES
+    from models.gnn.graph_dataset import SERVICE_NAMES, extract_service_name
 
     contract_path = PROCESSED_DIR / "feature_contract.json"
-    if not contract_path.exists():
-        raise RuntimeError(f"Feature contract is missing: {contract_path}")
-    saved_version = json.loads(contract_path.read_text(encoding="utf-8")).get("version")
+    saved_version = None
+    if contract_path.exists():
+        saved_version = json.loads(contract_path.read_text(encoding="utf-8")).get("version")
     if saved_version != FEATURE_PIPELINE_VERSION:
-        raise RuntimeError(
-            f"Code/processed feature contract mismatch: source={FEATURE_PIPELINE_VERSION!r}, "
-            f"processed={saved_version!r}. Reconcile the VM's v4 branch before collecting."
+        say(
+            f"Processed feature contract is {saved_version!r}; current code is "
+            f"{FEATURE_PIPELINE_VERSION!r}. This is expected before recollection; "
+            "the campaign will archive old artifacts and build a fresh scaler after collecting sessions."
         )
 
     processor = PandasMetricProcessor()
     try:
-        snapshot, status = processor.get_gnn_feature_snapshot()
+        snapshot, status = processor.get_gnn_feature_snapshot(preflight=True)
     except Exception as exc:
         raise RuntimeError(
             f"Read-only live feature snapshot failed: {exc}; "
@@ -183,9 +185,24 @@ def preflight(args: argparse.Namespace, env: dict[str, str], campaign_dir: Path)
             f"features={feature_count}/{len(MODEL_FEATURE_COLS)} status={status}"
         )
     say(
-        f"Read-only live telemetry PASS: pipeline={FEATURE_PIPELINE_VERSION} "
+        f"Read-only raw telemetry PASS: target pipeline={FEATURE_PIPELINE_VERSION} "
         f"services={len(snapshot)} features={feature_count}; no inference was run."
     )
+    pod_metadata = processor._query_prometheus('kube_pod_info{namespace="demo"}')
+    metadata_services = set()
+    if pod_metadata is not None:
+        for row in pod_metadata.itertuples():
+            pod = str(getattr(row, "pod", ""))
+            uid = str(getattr(row, "uid", ""))
+            node = str(getattr(row, "node", ""))
+            if pod and uid and node:
+                metadata_services.add(extract_service_name(pod))
+    missing_metadata = sorted(set(SERVICE_NAMES) - metadata_services)
+    if missing_metadata:
+        raise RuntimeError(
+            f"Kubernetes pod identity telemetry missing UID/node for services: {missing_metadata}"
+        )
+    say("Pod UID/node metadata PASS: all 11 workload services have an identifiable pod.")
     request = Request(args.frontend_url.rstrip("/") + "/", method="GET")
     with urlopen(request, timeout=10) as response:
         if response.status >= 400:
@@ -428,7 +445,16 @@ def training_dataset_check(cleaned_files: list[Path], session_ids: list[str], ca
     merged.to_csv(merged_path, index=False)
     _, _, test_sessions = split_session_ids(session_ids)
     test_rows = merged[merged["session_id"].astype(str).isin(test_sessions)]
-    counts = test_rows["label"].value_counts().to_dict()
+    # Incomplete telemetry is not a NORMAL example. Confirmed pod-crash rows
+    # may be incomplete at pod level because readiness/UID replacement is the
+    # observed signal, so retain those exact event labels for support checking.
+    if "telemetry_complete" not in test_rows:
+        raise ValueError("cleaned sessions are missing v5 telemetry_complete metadata")
+    telemetry_complete = pd.to_numeric(
+        test_rows["telemetry_complete"], errors="coerce"
+    ).fillna(0).eq(1)
+    countable = telemetry_complete | test_rows["label"].eq("FAULT_POD_CRASH")
+    counts = test_rows.loc[countable, "label"].value_counts().to_dict()
     return merged_path, test_sessions, {label: int(counts.get(label, 0)) for label in LABELS}
 
 
@@ -528,7 +554,12 @@ def main() -> int:
         save_summary(campaign_dir, summary)
 
     env = os.environ.copy()
-    env.update({"TARGET_NAMESPACE": "demo", "TZ": "UTC", "PYTHONUNBUFFERED": "1"})
+    env.update({
+        "TARGET_NAMESPACE": "demo",
+        "PROMETHEUS_URL": args.prometheus_url,
+        "TZ": "UTC",
+        "PYTHONUNBUFFERED": "1",
+    })
 
     say(f"Campaign {campaign_id}; logs/artifacts: {campaign_dir}")
     say("Each session runs the bounded standard injector (~56 minutes), one scraper, and at most the configured checkout count.")

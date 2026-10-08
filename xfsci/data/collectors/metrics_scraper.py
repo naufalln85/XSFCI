@@ -43,8 +43,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from models.gnn.feature_contract import (
     APP_SPAN_SERVICES,
+    APP_SPAN_ZERO_SERVICES,
     application_metric_queries,
+    service_readiness_query,
 )
+
+SERVICE_NAMES = tuple(sorted(set(APP_SPAN_SERVICES) | set(APP_SPAN_ZERO_SERVICES)))
+
+
+def service_name_for_pod(pod_name: str) -> str:
+    name = str(pod_name).lower().strip()
+    return next((service for service in SERVICE_NAMES
+                 if name == service or name.startswith(f"{service}-")), name)
 
 # ============================================================
 # CONFIGURATION
@@ -225,8 +235,61 @@ class XFSCIMetricsScraper:
         except requests.Timeout:
             logger.warning("Prometheus query timed out")
             return {}
-        except Exception as e:
-            logger.error(f"Error querying Prometheus: {e}")
+        except Exception as exc:
+            logger.error(f"Error querying Prometheus: {exc}")
+            return {}
+
+    def query_pod_metadata(self) -> dict[str, dict[str, str]]:
+        """Read pod UID and node placement without treating labels as metrics."""
+        try:
+            response = requests.get(
+                self.query_api,
+                params={"query": f'kube_pod_info{{namespace="{TARGET_NAMESPACE}"}}'},
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("status") != "success":
+                return {}
+            result = {}
+            for sample in payload.get("data", {}).get("result", []):
+                labels = sample.get("metric", {})
+                pod = labels.get("pod")
+                if pod:
+                    result[str(pod)] = {
+                        "pod_uid": str(labels.get("uid", "")),
+                        "node_name": str(labels.get("node", "")),
+                    }
+            return result
+        except Exception as exc:
+            logger.warning(f"Pod identity metadata unavailable: {exc}")
+            return {}
+
+    def query_service_readiness(self) -> dict[str, float]:
+        """Return ready/desired replica ratio for each workload service."""
+        try:
+            response = requests.get(
+                self.query_api,
+                params={"query": service_readiness_query(TARGET_NAMESPACE)},
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("status") != "success":
+                return {}
+            values = {}
+            for sample in payload.get("data", {}).get("result", []):
+                service = sample.get("metric", {}).get("service")
+                if service in SERVICE_NAMES:
+                    try:
+                        value = float(sample["value"][1])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if value == value:
+                        values[service] = min(1.0, max(0.0, value))
+            return values
+        except Exception as exc:
+            logger.warning(f"Service readiness metrics unavailable: {exc}")
             return {}
     
     def collect_one_step(self) -> list[dict]:
@@ -244,8 +307,18 @@ class XFSCIMetricsScraper:
         for metric_name, promql in QUERIES.items():
             all_metrics[metric_name] = self.query_prometheus(promql)
 
+        service_readiness = self.query_service_readiness()
+        missing_readiness = sorted(set(SERVICE_NAMES) - set(service_readiness))
+        if missing_readiness:
+            logger.warning(
+                "Skipping training sample: service readiness unavailable for "
+                f"{missing_readiness}"
+            )
+            return []
+        pod_metadata = self.query_pod_metadata()
+
         missing_app_metrics = [
-            name for name in ("request_rate", "error_rate")
+            name for name in ("request_rate", "error_rate", "request_latency_p95_ms")
             if not all_metrics.get(name)
         ]
         if missing_app_metrics:
@@ -273,19 +346,50 @@ class XFSCIMetricsScraper:
         all_pods = set()
         for metric_data in all_metrics.values():
             all_pods.update(metric_data.keys())
+        # Include every current workload pod reported by kube-state-metrics.
+        # A pod with all application metric series missing must still produce
+        # an explicit telemetry_complete=0 row instead of disappearing.
+        all_pods.update(pod_metadata.keys())
         
         # Filter: hanya pod yang valid (bukan system pods)
-        all_pods = {p for p in all_pods if p != "unknown" and not p.startswith("prometheus")}
+        all_pods = {
+            p for p in all_pods
+            if p != "unknown" and not p.startswith("prometheus")
+            and service_name_for_pod(p) in SERVICE_NAMES
+        }
         
         if not all_pods:
             logger.warning("No pods found. Check namespace and Prometheus targets.")
             return []
         
         # Build row per pod
+        rows_by_service = set()
         for pod in sorted(all_pods):
+            service = service_name_for_pod(pod)
+            rows_by_service.add(service)
+            ready_ratio = service_readiness[service]
+            pod_identity = pod_metadata.get(pod, {})
+            core_metrics = (
+                "cpu_usage", "memory_usage", "memory_usage_percent",
+                "pod_restarts", "net_rx_bytes", "net_tx_bytes",
+            )
+            telemetry_complete = all(pod in all_metrics.get(name, {}) for name in core_metrics)
+            telemetry_complete = telemetry_complete and bool(
+                pod_identity.get("pod_uid") and pod_identity.get("node_name")
+            )
+            if service in APP_SPAN_SERVICES:
+                telemetry_complete = telemetry_complete and all(
+                    pod in all_metrics.get(name, {})
+                    for name in ("request_rate", "error_rate", "request_latency_p95_ms")
+                )
+            else:
+                telemetry_complete = telemetry_complete and service in APP_SPAN_ZERO_SERVICES
             row = {
                 "timestamp": timestamp,
                 "pod_name": pod,
+                "pod_uid": pod_identity.get("pod_uid", ""),
+                "node_name": pod_identity.get("node_name", ""),
+                "telemetry_complete": int(telemetry_complete),
                 "cpu_usage": round(all_metrics.get("cpu_usage", {}).get(pod, 0.0), 6),
                 "memory_usage": round(all_metrics.get("memory_usage", {}).get(pod, 0.0), 2),
                 "memory_usage_percent": round(all_metrics.get("memory_usage_percent", {}).get(pod, 0.0), 2),
@@ -294,10 +398,37 @@ class XFSCIMetricsScraper:
                 "net_tx_bytes": round(all_metrics.get("net_tx_bytes", {}).get(pod, 0.0), 2),
                 "request_rate": round(all_metrics.get("request_rate", {}).get(pod, 0.0), 4),
                 "error_rate": round(all_metrics.get("error_rate", {}).get(pod, 0.0), 4),
+                "request_latency_p95_ms": round(
+                    all_metrics.get("request_latency_p95_ms", {}).get(pod, 0.0), 4
+                ),
+                "service_ready_ratio": round(ready_ratio, 4),
                 # Label awal: NORMAL (akan diupdate oleh data_labeler.py)
                 "label": "NORMAL",
             }
             rows.append(row)
+
+        # Preserve service-level availability even when all its pods vanish
+        # between scrapes. The row is explicitly telemetry-incomplete; downstream
+        # training masks its class label unless a fault event proves the label.
+        for service in sorted(set(SERVICE_NAMES) - rows_by_service):
+            rows.append({
+                "timestamp": timestamp,
+                "pod_name": service,
+                "pod_uid": "",
+                "node_name": "",
+                "telemetry_complete": 0,
+                "cpu_usage": 0.0,
+                "memory_usage": 0.0,
+                "memory_usage_percent": 0.0,
+                "pod_restarts": 0,
+                "net_rx_bytes": 0.0,
+                "net_tx_bytes": 0.0,
+                "request_rate": 0.0,
+                "error_rate": 0.0,
+                "request_latency_p95_ms": 0.0,
+                "service_ready_ratio": round(service_readiness[service], 4),
+                "label": "NORMAL",
+            })
         
         return rows
     

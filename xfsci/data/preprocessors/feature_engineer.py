@@ -57,8 +57,11 @@ from models.gnn.feature_contract import (
     DERIVED_FEATURE_COLS,
     FEATURE_PIPELINE_VERSION,
     MODEL_FEATURE_COLS,
+    SERVICE_NAMES,
+    extract_service_name,
 )
 from models.gnn.session_split import split_session_ids
+from models.gnn.service_aggregation import aggregate_service_rows
 
 BASE_DIR = PROJECT_ROOT
 PROCESSED_DIR = BASE_DIR / "data" / "processed"
@@ -96,6 +99,16 @@ class FeatureEngineer:
     def load(self, csv_path: Path) -> pd.DataFrame:
         logger.info(f"Loading: {csv_path.name}")
         df = pd.read_csv(csv_path)
+        required_v5 = {
+            "request_latency_p95_ms", "service_ready_ratio", "telemetry_complete",
+            "pod_uid", "node_name", "session_id",
+        }
+        missing_v5 = sorted(required_v5 - set(df.columns))
+        if missing_v5:
+            raise ValueError(
+                "Input is not v5 telemetry; missing "
+                f"{missing_v5}. Recollect data with the updated scraper and fault runner."
+            )
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         if "error_rate" in df.columns:
             # Compatibilitas per baris dengan CSV lama (persen) yang mungkin
@@ -292,12 +305,14 @@ class FeatureEngineer:
         # Rumus berbatas tetap agar hasilnya identik di data training dan live.
         # Normalisasi min-max final tetap memakai scaler yang disimpan.
         score = (
-            0.25 * (df["cpu_zscore_pod"].abs().clip(0, 5) / 5) +
-            0.20 * (df["memory_slope_12"].clip(0, 100) / 100) +
-            0.20 * (df["restart_delta"].clip(0, 5) / 5) +
-            0.15 * df["net_asymmetry"].clip(0, 1) +
+            0.20 * (df["cpu_zscore_pod"].abs().clip(0, 5) / 5) +
+            0.18 * (df["memory_slope_12"].clip(0, 100) / 100) +
+            0.16 * (df["restart_delta"].clip(0, 5) / 5) +
+            0.12 * df["net_asymmetry"].clip(0, 1) +
             0.10 * df["error_rate"].clip(0, 1) +
-            0.10 * (df["memory_growth_rate"].clip(0, 100) / 100)
+            0.09 * (df["memory_growth_rate"].clip(0, 100) / 100) +
+            0.10 * (df["request_latency_p95_ms"].clip(0, 2000) / 2000) +
+            0.05 * (1.0 - df["service_ready_ratio"].clip(0, 1))
         )
 
         df["anomaly_score_raw"] = score.clip(0, 1).round(4)
@@ -315,17 +330,69 @@ class FeatureEngineer:
 
     def compute_scaler_params(self, df: pd.DataFrame) -> dict:
         """
-        Hitung parameter min-max normalisasi untuk setiap kolom fitur.
-        Disimpan ke JSON agar bisa digunakan oleh model saat inference.
+        Fit scaler on the same service-level rows consumed by the GNN.
+
+        Training and live inference both aggregate replicas before scaling.
+        Fitting on individual pods would give summed request/network features a
+        different range from the actual model input and could clip them early.
         """
+        complete = df.copy()
+        complete["service_name"] = complete["pod_name"].map(extract_service_name)
+        complete = complete.loc[complete["service_name"].isin(SERVICE_NAMES)].copy()
+        complete["time_bin"] = pd.to_datetime(complete["timestamp"]).dt.floor("5s")
+        group_columns = ["session_id", "time_bin", "service_name"]
+        telemetry_ok = pd.to_numeric(
+            complete["telemetry_complete"], errors="coerce"
+        ).fillna(0).eq(1)
+        group_complete = telemetry_ok.groupby(
+            [complete[column] for column in group_columns], sort=False
+        ).transform("all")
+        complete = complete.loc[group_complete].copy()
+        aggregate_rows = []
+        for _, service_rows in complete.groupby(group_columns, sort=False):
+            values = aggregate_service_rows(service_rows, MODEL_FEATURE_COLS)
+            aggregate_rows.append(dict(zip(MODEL_FEATURE_COLS, values)))
+        scaler_rows = pd.DataFrame(aggregate_rows)
+        if scaler_rows.empty:
+            raise ValueError("No complete service-level rows available to fit scaler")
+
         params = {}
         for col in MODEL_FEATURE_COLS:
-            if col in df.columns:
+            if col in scaler_rows.columns:
+                # These features have stable physical units. Fixed bounds keep
+                # readiness loss, restarts, CPU load, and memory growth visible
+                # even if a training split does not contain their extremes.
+                fixed_bounds = {
+                    "cpu_usage": (0.0, 4.0),
+                    "pod_restarts": (0.0, 100.0),
+                    "restart_delta": (0.0, 10.0),
+                    "memory_slope_12": (0.0, 100.0),
+                    "service_ready_ratio": (0.0, 1.0),
+                    "request_latency_p95_ms": (0.0, 2000.0),
+                }
+                if col in fixed_bounds:
+                    lo, hi = fixed_bounds[col]
+                    values = pd.to_numeric(scaler_rows[col], errors="coerce")
+                    values = values.replace([np.inf, -np.inf], np.nan).dropna()
+                    if values.empty:
+                        raise ValueError(f"No measured values available for scaler feature {col}")
+                    params[col] = {
+                        "min": lo,
+                        "max": hi,
+                        "mean": float(values.mean()),
+                        "std": float(values.std()),
+                        "scaling": "fixed_physical_bounds",
+                    }
+                    continue
+                values = pd.to_numeric(scaler_rows[col], errors="coerce")
+                values = values.replace([np.inf, -np.inf], np.nan).dropna()
+                if values.empty:
+                    raise ValueError(f"No telemetry-complete training values for scaler feature {col}")
                 params[col] = {
-                    "min": float(df[col].min()),
-                    "max": float(df[col].max()),
-                    "mean": float(df[col].mean()),
-                    "std": float(df[col].std()),
+                    "min": float(values.min()),
+                    "max": float(values.max()),
+                    "mean": float(values.mean()),
+                    "std": float(values.std()),
                 }
         self.scaler_params = params
         return params
@@ -414,9 +481,25 @@ class FeatureEngineer:
         contract_path.write_text(json.dumps({
             "version": FEATURE_PIPELINE_VERSION,
             "features": MODEL_FEATURE_COLS,
+            "services": list(SERVICE_NAMES),
             "normalization": "minmax_clip_0_1",
+            "feature_count": len(MODEL_FEATURE_COLS),
+            "fixed_feature_bounds": {
+                "cpu_usage": [0.0, 4.0],
+                "pod_restarts": [0.0, 100.0],
+                "restart_delta": [0.0, 10.0],
+                "memory_slope_12": [0.0, 100.0],
+                "request_latency_p95_ms": [0.0, 2000.0],
+                "service_ready_ratio": [0.0, 1.0],
+            },
             "request_rate_source": "otel_span_metrics_server_calls_per_second",
             "error_rate_source": "otel_span_metrics_status_error_fraction",
+            "request_latency_p95_ms_source": "otel_span_metrics_xfsci_duration_seconds_bucket_p95",
+            "service_ready_ratio_source": "kube_state_metrics_ready_over_desired_replicas",
+            "replica_aggregation": "sum_request_and_network_rates_request_weight_error_max_other_features",
+            "scaler_fit_unit": "complete_service_aggregates_per_5s_training_session_only",
+            "missing_telemetry_policy": "unknown_node_and_graph_labels_masked_from_loss",
+            "fault_label_policy": "node_scoped_observed_metric_change_and_exact_pod_delete_events",
             "app_metrics_zero_for_services": list(APP_SPAN_ZERO_SERVICES),
             "error_rate_unit": "fraction_0_1",
             "cpu_usage_unit": "cores",

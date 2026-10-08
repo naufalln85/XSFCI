@@ -1,6 +1,6 @@
 """
 ============================================================
-XFSCI GNN Architecture - Layer 2: Cloud Intelligence (V2 - 21 Features)
+XFSCI GNN Architecture - Layer 2: Cloud Intelligence (Dual-Head GATv2)
 ============================================================
 Arsitektur Dual-Head GATv2 (Graph Attention Network v2)
 untuk deteksi anomali dan lokalisasi akar masalah microservice:
@@ -96,7 +96,7 @@ class DualHeadGATv2(nn.Module):
     Arsitektur GATv2 Dual-Head untuk XFSCI Layer 2.
     
     Parameters:
-      in_channels : Jumlah fitur input per node (default: 18)
+      in_channels : Jumlah fitur input per node (current contract: 23)
       hidden_dim  : Dimensi representasi hidden (default: 32)
       num_heads   : Jumlah attention heads di layer 1 (default: 4)
       num_classes : Jumlah kelas anomali node (default: 5)
@@ -104,7 +104,7 @@ class DualHeadGATv2(nn.Module):
     """
 
     def __init__(self,
-                 in_channels: int = 21,
+                 in_channels: int = 23,
                  hidden_dim: int = 32,
                  num_heads: int = 4,
                  num_classes: int = 5,
@@ -290,11 +290,13 @@ class DualHeadGATv2(nn.Module):
 
 
 if __name__ == "__main__":
-    logger.info("Testing DualHeadGATv2 model (V2: 21 features)...")
-    model = DualHeadGATv2(in_channels=21, hidden_dim=32, num_heads=4, num_classes=5)
+    from models.gnn.feature_contract import MODEL_FEATURE_COLS
+    feature_count = len(MODEL_FEATURE_COLS)
+    logger.info(f"Testing DualHeadGATv2 model ({feature_count} contract features)...")
+    model = DualHeadGATv2(in_channels=feature_count, hidden_dim=32, num_heads=4, num_classes=5)
     
-    # Dummy single graph test (11 nodes, 21 features)
-    dummy_x = torch.randn(11, 21)
+    # Dummy single graph test (11 nodes, current contract feature count)
+    dummy_x = torch.randn(11, feature_count)
     dummy_edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]], dtype=torch.long)
     
     node_out, graph_out, _ = model(dummy_x, dummy_edge_index)

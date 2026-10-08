@@ -94,8 +94,16 @@ class XFSCIDataCleaner:
         numeric_cols = [
             "cpu_usage", "memory_usage", "memory_usage_percent",
             "pod_restarts", "net_rx_bytes", "net_tx_bytes",
-            "request_rate", "error_rate",
+            "request_rate", "error_rate", "request_latency_p95_ms",
+            "service_ready_ratio",
         ]
+        required_metadata = {"pod_uid", "node_name", "telemetry_complete"}
+        missing_metadata = sorted(required_metadata - set(df.columns))
+        if missing_metadata:
+            raise ValueError(
+                "Raw telemetry is missing v5 identity/quality fields "
+                f"{missing_metadata}; recollect with the updated metrics_scraper.py."
+            )
 
         # Ganti infinite dengan NaN dulu
         df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
@@ -103,7 +111,12 @@ class XFSCIDataCleaner:
         nan_before = df[numeric_cols].isna().sum().sum()
 
         # Isi NaN dengan 0 untuk kolom counter
-        zero_fill_cols = ["pod_restarts", "request_rate", "error_rate"]
+        if df["service_ready_ratio"].isna().any():
+            raise ValueError("service_ready_ratio is missing; refusing to convert unknown readiness to zero")
+
+        zero_fill_cols = [
+            "pod_restarts", "request_rate", "error_rate", "request_latency_p95_ms",
+        ]
         df[zero_fill_cols] = df[zero_fill_cols].fillna(0)
 
         # Isi NaN untuk kolom resource dengan forward-fill per pod
@@ -132,9 +145,12 @@ class XFSCIDataCleaner:
         df["net_rx_bytes"] = df["net_rx_bytes"].clip(0, 1e9)
         df["net_tx_bytes"] = df["net_tx_bytes"].clip(0, 1e9)
         df["request_rate"] = df["request_rate"].clip(0, 1e6)
-        # Feature contract v4 defines error_rate as a fraction in [0, 1].
+        # Feature contract v5 defines error_rate as a fraction in [0, 1].
         df["error_rate"] = df["error_rate"].clip(0, 1)
+        df["request_latency_p95_ms"] = df["request_latency_p95_ms"].clip(0, 1e7)
+        df["service_ready_ratio"] = df["service_ready_ratio"].clip(0, 1)
         df["pod_restarts"] = df["pod_restarts"].clip(0, 100)
+        df["telemetry_complete"] = df["telemetry_complete"].fillna(0).clip(0, 1).astype(int)
         return df
 
     def sort_and_reset(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -147,7 +163,8 @@ class XFSCIDataCleaner:
         numeric_cols = [
             "cpu_usage", "memory_usage", "memory_usage_percent",
             "pod_restarts", "net_rx_bytes", "net_tx_bytes",
-            "request_rate", "error_rate",
+            "request_rate", "error_rate", "request_latency_p95_ms",
+            "service_ready_ratio",
         ]
         nan_count = df[numeric_cols].isna().sum().sum()
         inf_count = np.isinf(df[numeric_cols].values).sum()

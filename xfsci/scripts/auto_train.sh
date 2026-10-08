@@ -10,7 +10,7 @@
 #
 # Setiap iterasi:
 #   1. Generate synthetic data V3 (balanced per class)
-#   2. Feature engineering (21 fitur)
+#   2. Feature engineering (feature contract v5)
 #   3. Train GNN dengan hyperparameter yang berbeda
 #   4. Cek apakah semua target tercapai
 #   5. Jika belum → ulangi dengan variasi hyperparameter
@@ -197,7 +197,7 @@ for i in $(seq 0 $((MAX_ITERATIONS - 1))); do
     echo -e "  ${GREEN}✅ Synthetic data generated${NC}"
 
     # ── Step 2: Feature Engineering ──
-    echo -e "  ${CYAN}[Step 2/3]${NC} Running feature engineering (21 fitur)..."
+    echo -e "  ${CYAN}[Step 2/3]${NC} Running feature engineering (current feature contract)..."
     python3 data/preprocessors/feature_engineer.py
 
     if [ $? -ne 0 ]; then

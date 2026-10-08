@@ -1,13 +1,16 @@
 # ============================================================
 # Fault Injection: Pod Crash / CrashLoopBackOff
 # ============================================================
-# Menghapus pod secara paksa untuk mensimulasikan crash mendadak.
-# Kubernetes akan otomatis me-restart pod (CrashLoopBackOff).
+# LEGACY MANIFEST: do not apply during a quality/data campaign.
+# This CronJob deletes random pods without emitting the selected pod UID,
+# exact timestamp, or Kubernetes event reason. The quality runner deletes one
+# selected demo pod from the host and writes an auditable XFSCI_POD_EVENT.
+# Applying this CronJob creates untracked faults and invalid labels.
 #
 # Tujuan: Menghasilkan data restart_count meningkat tajam
 # dan periode downtime singkat di dataset.
 #
-# Deploy:  kubectl apply -f pod-crash.yaml
+# Keep this file only so the runner can remove an older CronJob/RBAC install.
 # ============================================================
 
 # Job yang secara periodik menghapus pod target

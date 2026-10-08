@@ -172,7 +172,7 @@ p = GNNPredictor()
 if p.is_ready:
     result = p.predict_target('cartservice')
     if result is None:
-        print('  ⚠️ Inference skipped: provide a complete live 11-service × 21-feature snapshot.')
+        print('  ⚠️ Inference skipped: provide a complete live 11-service × current-contract-feature snapshot.')
         print('     A no-input call is not a valid model accuracy or RCA test.')
     else:
         print(f'  ✅ GNN Inference OK! Risk Score: {result.risk_score:.3f} | Anomaly: {result.anomaly_type.value}')

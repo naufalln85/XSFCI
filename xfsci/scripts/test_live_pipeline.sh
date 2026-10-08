@@ -21,6 +21,15 @@
 
 set -euo pipefail
 
+# Auto-activate venv if available
+if [[ -f "$HOME/venv-xfsci/bin/activate" ]]; then
+    # shellcheck disable=SC1091
+    source "$HOME/venv-xfsci/bin/activate"
+elif [[ -f "${PROJECT_DIR:-}/venv/bin/activate" ]]; then
+    # shellcheck disable=SC1091
+    source "${PROJECT_DIR}/venv/bin/activate"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 

@@ -157,7 +157,6 @@ def preflight(args: argparse.Namespace, env: dict[str, str], campaign_dir: Path)
             raise RuntimeError(f"Kubernetes permission denied: {permission} in demo.")
 
     # Check if we are resuming a campaign where all sessions are already collected
-    resuming_complete = False
     if args.resume_campaign:
         existing_sessions = [
             d for d in campaign_dir.iterdir()
@@ -168,46 +167,53 @@ def preflight(args: argparse.Namespace, env: dict[str, str], campaign_dir: Path)
             )
         ]
         if len(existing_sessions) >= args.max_sessions:
-            resuming_complete = True
-            say(f"PRE-FLIGHT: Resuming campaign with {len(existing_sessions)} already collected sessions; skipping live telemetry preflight.")
+            running = process_alive_with_orchestrator()
+            if running:
+                details = "\n".join(running)
+                raise RuntimeError(
+                    "An XFSCI orchestrator or metrics scraper process appears active. Stop autonomous "
+                    "remediation and duplicate collection before training:\n"
+                    f"{details}"
+                )
+            say(f"PRE-FLIGHT PASS: context={context}; namespace=demo; node sites={sorted(sites)} (resuming with {len(existing_sessions)} already collected sessions)")
+            return
 
-    if not resuming_complete:
-        if not prometheus_has_traces(args.prometheus_url):
-            raise RuntimeError("Prometheus has no xfsci_calls_total server traces for demo.")
-        from agent.pandas_processor import PandasMetricProcessor
-        from models.gnn.feature_contract import FEATURE_PIPELINE_VERSION, MODEL_FEATURE_COLS
-        from models.gnn.graph_dataset import SERVICE_NAMES, extract_service_name
+    if not prometheus_has_traces(args.prometheus_url):
+        raise RuntimeError("Prometheus has no xfsci_calls_total server traces for demo.")
+    from agent.pandas_processor import PandasMetricProcessor
+    from models.gnn.feature_contract import FEATURE_PIPELINE_VERSION, MODEL_FEATURE_COLS
+    from models.gnn.graph_dataset import SERVICE_NAMES, extract_service_name
 
-        contract_path = PROCESSED_DIR / "feature_contract.json"
-        saved_version = None
-        if contract_path.exists():
-            saved_version = json.loads(contract_path.read_text(encoding="utf-8")).get("version")
-        if saved_version != FEATURE_PIPELINE_VERSION:
-            say(
-                f"Processed feature contract is {saved_version!r}; current code is "
-                f"{FEATURE_PIPELINE_VERSION!r}. This is expected before recollection; "
-                "the campaign will archive old artifacts and build a fresh scaler after collecting sessions."
-            )
-
-        processor = PandasMetricProcessor()
-        try:
-            snapshot, status = processor.get_gnn_feature_snapshot(preflight=True)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Read-only live feature snapshot failed: {exc}; "
-                f"status={processor.last_gnn_snapshot_status}"
-            ) from exc
-        feature_count = len(next(iter(snapshot.values()))) if snapshot else 0
-        if not status.get("available") or len(snapshot) != len(SERVICE_NAMES) or feature_count != len(MODEL_FEATURE_COLS):
-            raise RuntimeError(
-                "Live feature contract is not ready: "
-                f"available={status.get('available')} services={len(snapshot)}/{len(SERVICE_NAMES)} "
-                f"features={feature_count}/{len(MODEL_FEATURE_COLS)} status={status}"
-            )
+    contract_path = PROCESSED_DIR / "feature_contract.json"
+    saved_version = None
+    if contract_path.exists():
+        saved_version = json.loads(contract_path.read_text(encoding="utf-8")).get("version")
+    if saved_version != FEATURE_PIPELINE_VERSION:
         say(
-            f"Read-only raw telemetry PASS: target pipeline={FEATURE_PIPELINE_VERSION} "
-            f"services={len(snapshot)} features={feature_count}; no inference was run."
+            f"Processed feature contract is {saved_version!r}; current code is "
+            f"{FEATURE_PIPELINE_VERSION!r}. This is expected before recollection; "
+            "the campaign will archive old artifacts and build a fresh scaler after collecting sessions."
         )
+
+    processor = PandasMetricProcessor()
+    try:
+        snapshot, status = processor.get_gnn_feature_snapshot(preflight=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Read-only live feature snapshot failed: {exc}; "
+            f"status={processor.last_gnn_snapshot_status}"
+        ) from exc
+    feature_count = len(next(iter(snapshot.values()))) if snapshot else 0
+    if not status.get("available") or len(snapshot) != len(SERVICE_NAMES) or feature_count != len(MODEL_FEATURE_COLS):
+        raise RuntimeError(
+            "Live feature contract is not ready: "
+            f"available={status.get('available')} services={len(snapshot)}/{len(SERVICE_NAMES)} "
+            f"features={feature_count}/{len(MODEL_FEATURE_COLS)} status={status}"
+        )
+    say(
+        f"Read-only raw telemetry PASS: target pipeline={FEATURE_PIPELINE_VERSION} "
+        f"services={len(snapshot)} features={feature_count}; no inference was run."
+    )
     pod_metadata = processor._query_prometheus('kube_pod_info{namespace="demo"}')
     metadata_services = set()
     if pod_metadata is not None:

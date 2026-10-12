@@ -309,13 +309,13 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
                 f"### LAPORAN SITUASI SRE (DATA AKTUAL):\n"
                 f"{prompt}\n\n"
                 f"TUGAS: Analisis data di atas dan tentukan tindakan perbaikan terbaik.\n"
-                f"WAJIB: Berikan HANYA respon dalam format JSON valid sesuai schema ActionDecision "
-                f"(tanpa teks pembuka/penutup, dan JANGAN mengeksekusi tool sistem eksternal)."
+                f"WAJIB: Berikan HANYA respon dalam format JSON valid sesuai schema ActionDecision.\n"
+                f"JANGAN memanggil tool sistem apa pun (read_file, run_command, dll) karena semua data sudah lengkap di laporan ini."
             )
 
-            # Format CLI terverifikasi: agy -p "<prompt>" --model <model>
+            # Format CLI headless: agy -p "<prompt>" --model <model> --dangerously-skip-permissions
             try:
-                cmd = [agy_bin, "-p", full_prompt, "--model", model_name]
+                cmd = [agy_bin, "-p", full_prompt, "--model", model_name, "--dangerously-skip-permissions"]
                 logger.info(f"🚀 Memanggil agy CLI --model {model_name} (timeout: {timeout}s)...")
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
                 if proc.returncode == 0 and proc.stdout.strip():

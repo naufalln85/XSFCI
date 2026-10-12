@@ -278,10 +278,10 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         # orchestrator/K8s API, bukan dengan akses shell bebas dari model.
         allowed_cmds = self.antigravity_config.get("allowed_commands", [])
         sandbox_on = self.antigravity_config.get("sandbox_mode", True)
-        primary_model = self.antigravity_config.get("model_priority", "gemini-3.8-flash-high")
-        fallback_model = self.antigravity_config.get("fallback_model", "claude-opus-4-6-thinking")
+        primary_model = self.antigravity_config.get("model_priority", "claude-opus-4-6-thinking")
+        fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.8-flash-high")
         primary_timeout = int(self.antigravity_config.get("primary_timeout_seconds", 60))
-        fallback_timeout = int(self.antigravity_config.get("fallback_timeout_seconds", 60))
+        fallback_timeout = int(self.antigravity_config.get("fallback_timeout_seconds", 90))
 
         # ──────────────────────────────────────────────────────
         # Jalur 1 (Sinkron): Antigravity CLI — `agy -p`

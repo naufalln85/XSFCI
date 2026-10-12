@@ -234,13 +234,16 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
 1. Target deployment WAJIB mengacu pada Tersangka Utama (Root Cause) hasil GNN: "{primary_target}". JANGAN menyalahkan pod hilir yang hanya korban cascade.
 2. Aksi WAJIB dipilih dari daftar enum terkunci:
    [no_op, restart_pod, scale_out, scale_in, rate_limit, migrate_pod, escalate]
-3. Jika anomali adalah memory_leak, scale_out hanya jika metrik menunjukkan tekanan resource/traffic dan scale-out tidak melampaui batas; OOMKilled tidak otomatis diselesaikan dengan restart.
-4. Jangan melakukan scale_out hanya karena restart berulang. Untuk CrashLoop, baca bukti diagnosis; restart deployment dapat mengganggu pod sehat dan tidak memperbaiki bug/config yang menetap.
-5. Jika bukti menunjukkan OOMKilled, ImagePullBackOff, FailedMount/config, error aplikasi berulang, atau dependency belum sehat, pilih escalate dan sertakan diagnosis serta bukti relevan.
-6. restart_pod hanya untuk gangguan sementara yang terkonfirmasi dan ketika deployment masih memiliki pod Ready. Restart otomatis dibatasi oleh guardrail orkestrator.
-7. scale_in memerlukan persetujuan operator; jangan menganggapnya sudah disetujui.
-8. rate_limit dan migrate_pod belum memiliki implementasi operasional yang aman; pilih escalate jika keduanya tampak diperlukan.
-9. Jawab HANYA dalam format JSON valid berikut (tanpa teks penjelasan lain):
+3. Jika confidence kamu >= 0.60, WAJIB ambil aksi konkret pemulihan (restart_pod, scale_out, dll). DILARANG memilih escalate hanya karena ragu jika bukti anomali jelas.
+4. KEBIJAKAN RESTART:
+   - Jika deployment hanya memiliki 1 replika (replicas=1) dan pod mengalami crash/OOM/not-ready:
+     → restart_pod WAJIB dipilih untuk memulihkan layanan secepatnya.
+   - Untuk deployment multi-replika: restart_pod dilakukan secara bertahap (rolling).
+5. KEBIJAKAN SCALE:
+   - scale_out dipilih jika bukti CPU > 80%, RAM tinggi akibat lonjakan request, atau kapasitas cluster memungkinkan.
+6. Eskalasi ke manusia (escalate) HANYA untuk masalah permanen yang tidak bisa sembuh sendiri (misal: ImagePullBackOff, salah config/secret, atau bug kode persisten).
+7. rate_limit dan migrate_pod belum diimplementasikan; jangan dipilih.
+8. Jawab HANYA dalam format JSON valid berikut (tanpa teks penjelasan lain):
 {{
     "action": "<salah satu dari: no_op, restart_pod, scale_out, scale_in, rate_limit, migrate_pod, escalate>",
     "target_deployment": "{primary_target}",
@@ -263,8 +266,8 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         """
         Tier 1 (Primary): Menjalankan Antigravity Agentic Engine
         menggunakan model Akun Pro dengan fitur AUTO-SWITCH:
-        1. Model Prioritas: Claude Opus 4.6 (Thinking) — Deep reasoning SRE
-        2. Auto-Switch Fallback: Gemini 3.8 Flash (High) jika Opus limit/error
+        1. Model Prioritas: Gemini 3.8 Flash (High) / Claude Opus 4.6 (Thinking)
+        2. Auto-Switch Fallback jika prioritas timeout/error
         3. Sandbox: Eksekusi tervendor di lingkungan aman
         """
         prompt = self._build_prompt(situation, action_priorities)
@@ -272,17 +275,17 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         # orchestrator/K8s API, bukan dengan akses shell bebas dari model.
         allowed_cmds = self.antigravity_config.get("allowed_commands", [])
         sandbox_on = self.antigravity_config.get("sandbox_mode", True)
-        primary_model = self.antigravity_config.get("model_priority", "claude-opus-4-6-thinking")
-        fallback_model = self.antigravity_config.get("fallback_model", "gemini-3.8-flash-high")
-        primary_timeout = int(self.antigravity_config.get("primary_timeout_seconds", 60))
-        fallback_timeout = int(self.antigravity_config.get("fallback_timeout_seconds", self.antigravity_config.get("timeout_seconds", 150)))
+        primary_model = self.antigravity_config.get("model_priority", "gemini-3.8-flash-high")
+        fallback_model = self.antigravity_config.get("fallback_model", "claude-opus-4-6-thinking")
+        primary_timeout = int(self.antigravity_config.get("primary_timeout_seconds", 30))
+        fallback_timeout = int(self.antigravity_config.get("fallback_timeout_seconds", 90))
 
         # ──────────────────────────────────────────────────────
         # Jalur 1 (Sinkron): Antigravity CLI — `agy -p`
         #   Menggunakan sesi Akun Pro dari `agy auth login`.
         #   TIDAK membutuhkan GEMINI_API_KEY.
         # ──────────────────────────────────────────────────────
-        def _call_via_cli(model_name: str, timeout: int = 150) -> Optional[str]:
+        def _call_via_cli(model_name: str, timeout: int = 60) -> Optional[str]:
             """Panggil agy CLI dengan slug model PERSIS dari `agy models`."""
             import shutil
             import subprocess
@@ -310,21 +313,23 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
                 f"(tanpa teks pembuka/penutup, dan JANGAN mengeksekusi tool sistem eksternal)."
             )
 
-            # Slug sudah lengkap dari `agy models`, langsung pakai di --model
+            # Format CLI terverifikasi: agy -p "<prompt>" --model <model>
             try:
-                cmd = [agy_bin, "--model", model_name, "--dangerously-skip-permissions", "-p", full_prompt]
+                cmd = [agy_bin, "-p", full_prompt, "--model", model_name]
                 logger.info(f"🚀 Memanggil agy CLI --model {model_name} (timeout: {timeout}s)...")
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
                 if proc.returncode == 0 and proc.stdout.strip():
                     logger.success(f"✅ agy CLI ({model_name}) berhasil merespon!")
                     return proc.stdout.strip()
 
                 if proc.stderr:
-                    logger.debug(f"agy stderr ({model_name}): {proc.stderr[:300]}")
-            except subprocess.TimeoutExpired:
-                logger.warning(f"agy CLI timed out ({timeout}s) untuk {model_name}")
+                    logger.warning(f"agy stderr ({model_name}, rc={proc.returncode}): {proc.stderr[:400]}")
+            except subprocess.TimeoutExpired as exc:
+                out_snippet = (exc.stdout or "")[:200]
+                err_snippet = (exc.stderr or "")[:200]
+                logger.warning(f"agy CLI timed out ({timeout}s) untuk {model_name}. out: {out_snippet} | err: {err_snippet}")
             except Exception as e:
-                logger.debug(f"agy CLI --model {model_name} error: {e}")
+                logger.error(f"agy CLI --model {model_name} error: {e}")
 
             return None
 

@@ -241,7 +241,7 @@ class MultiStepPlanner:
                 f"anomaly={situation.ml_prediction.anomaly_type.value}"
             ),
             estimated_duration_seconds=total_wait + 30,
-            confidence=0.85
+            confidence=0.80
         )
         
         logger.info(

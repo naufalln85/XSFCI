@@ -835,14 +835,21 @@ class PandasMetricProcessor:
         df_p50 = self._query_prometheus(query_p50)
         df_p99 = self._query_prometheus(query_p99)
         
-        latency_p50 = df_p50["value"].iloc[0] if df_p50 is not None and not df_p50.empty else 0.0
-        latency_p99 = df_p99["value"].iloc[0] if df_p99 is not None and not df_p99.empty else 0.0
-        
+        val_p50 = df_p50["value"].iloc[0] if df_p50 is not None and not df_p50.empty else 0.0
+        val_p99 = df_p99["value"].iloc[0] if df_p99 is not None and not df_p99.empty else 0.0
+
+        def _clean_metric(v):
+            try:
+                fv = float(v)
+                return 0.0 if (np.isnan(fv) or np.isinf(fv) or fv < 0) else fv
+            except (ValueError, TypeError):
+                return 0.0
+
         return {
-            "request_rate_rps": round(rps, 2),
-            "error_rate_percent": round(error_rate, 2),
-            "latency_p50_ms": round(latency_p50, 2),
-            "latency_p99_ms": round(latency_p99, 2),
+            "request_rate_rps": round(_clean_metric(rps), 2),
+            "error_rate_percent": round(_clean_metric(error_rate), 2),
+            "latency_p50_ms": round(_clean_metric(val_p50), 2),
+            "latency_p99_ms": round(_clean_metric(val_p99), 2),
         }
     
     def detect_anomaly_pattern(self, metrics: dict) -> AnomalyType:

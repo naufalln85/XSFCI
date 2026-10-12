@@ -356,14 +356,33 @@ class XFSCIOrchestrator:
                 )
 
             diagnosis = diagnostic_evidence.get("diagnosis", "unknown")
+            # Diagnoses yang benar-benar TIDAK bisa diperbaiki dengan restart/scale
+            # (perlu intervensi manusia: fix image, fix config, fix dependency)
             non_remediable_diagnoses = {
-                "oom_killed", "image_pull", "config_mount", "dependency_or_network",
-                "application_error", "crash_loop_unknown",
+                "image_pull", "config_mount", "dependency_or_network",
+                "application_error",
+            }
+            # Diagnoses yang BISA diperbaiki dengan restart_pod
+            restartable_diagnoses = {
+                "probe_failure", "crash_loop", "crash_loop_unknown",
+                "oom_killed", "pod_crash", "unknown",
             }
             if decision.action not in (ActionType.NO_OP, ActionType.ESCALATE):
                 block_reason = None
+                # Cek apakah ini single-replica deployment dengan pod mati
+                is_single_replica_down = (
+                    pandas_metrics.current_replicas <= 1
+                    and pandas_metrics.ready_replicas == 0
+                )
                 if not diagnostic_evidence.get("available") and pandas_metrics.pod_restarts_1h >= 3:
-                    block_reason = "Bukti pod/log/event tidak tersedia untuk CrashLoop; remediasi otomatis diblokir."
+                    if is_single_replica_down and decision.action == ActionType.RESTART_POD:
+                        # Single replica mati tanpa bukti → restart tetap diizinkan
+                        logger.info(
+                            "⚡ Single-replica deployment DOWN tanpa bukti diagnostik. "
+                            "Mengizinkan restart_pod karena tidak ada alternatif."
+                        )
+                    else:
+                        block_reason = "Bukti pod/log/event tidak tersedia untuk CrashLoop; remediasi otomatis diblokir."
                 elif (
                     decision.action == ActionType.SCALE_OUT
                     and pandas_metrics.pod_restarts_1h >= 3
@@ -378,17 +397,23 @@ class XFSCIOrchestrator:
                     )
                 elif diagnosis in non_remediable_diagnoses:
                     block_reason = diagnostic_evidence.get("diagnosis_summary", diagnosis)
-                elif decision.action == ActionType.RESTART_POD and diagnosis != "probe_failure":
-                    block_reason = (
-                        "Restart otomatis hanya diizinkan bila event Unhealthy/probe failure "
-                        "terkonfirmasi; bukti saat ini tidak memenuhi syarat."
-                    )
+                elif decision.action == ActionType.RESTART_POD and diagnosis not in restartable_diagnoses:
+                    if not is_single_replica_down:
+                        block_reason = (
+                            f"Restart otomatis tidak diizinkan untuk diagnosis '{diagnosis}'. "
+                            "Diizinkan hanya untuk: probe_failure, crash_loop, oom_killed, pod_crash."
+                        )
+                    else:
+                        logger.info(
+                            f"⚡ Single-replica deployment DOWN (diagnosis={diagnosis}). "
+                            "Mengizinkan restart_pod sebagai satu-satunya cara pemulihan."
+                        )
                 if block_reason:
                     decision = ActionDecision(
                         action=ActionType.ESCALATE,
                         target_deployment=deployment_name,
                         target_namespace=pandas_metrics.namespace,
-                        confidence=max(decision.confidence, 0.85),
+                        confidence=decision.confidence,
                         reasoning=(
                             f"Remediasi otomatis diblokir oleh diagnosis berbasis bukti: {block_reason} "
                             f"Temuan: {diagnostic_evidence.get('diagnosis_summary', 'tidak ada ringkasan')} "
@@ -433,7 +458,7 @@ class XFSCIOrchestrator:
                         )
         
         # Confidence gate: Paksa eskalasi jika confidence rendah
-        confidence_threshold = self.guardrail_config.get("confidence_threshold", 0.85)
+        confidence_threshold = self.guardrail_config.get("confidence_threshold", 0.60)
         if (decision.confidence < confidence_threshold and
             decision.action != ActionType.NO_OP and
             decision.action != ActionType.ESCALATE):

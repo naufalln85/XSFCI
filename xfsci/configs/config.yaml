@@ -288,7 +288,7 @@ healing:
   approval_required_actions: ["scale_in"]
   # Safety Guardrails
   guardrails:
-    confidence_threshold: 0.85  # Minimum AI confidence to execute
+    confidence_threshold: 0.60  # Minimum AI confidence to execute (turunkan dari 0.85 agar AI tidak terlalu takut bertindak)
     max_actions_per_pod: 2      # Max healing per pod within cooldown
     cooldown_minutes: 15        # Cooldown period
     circuit_breaker_failures: 3 # Auto-stop after N consecutive failures

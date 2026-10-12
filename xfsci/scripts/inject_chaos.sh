@@ -191,7 +191,9 @@ inject_crash_loop() {
     local iterations=$((dur / 10))
     for i in $(seq 1 "$iterations"); do
         echo -e "${RED}   💀 Kill attempt ${i}/${iterations} on ${pod}...${NC}"
-        kubectl exec -n "$ns" "$pod" -- sh -c "kill -9 1" 2>/dev/null || \
+        # Linux kernel mengabaikan SIGKILL (kill -9) ke PID 1 dari dalam namespace container.
+        # Gunakan SIGSEGV/SIGTERM atau pkill untuk memaksa container crash & restart.
+        kubectl exec -n "$ns" "$pod" -- sh -c "kill -11 1 2>/dev/null || kill -15 1 2>/dev/null || pkill -9 -f python 2>/dev/null || pkill -9 -f java 2>/dev/null || pkill -9 -f node 2>/dev/null || kill -9 1 2>/dev/null" 2>/dev/null || \
         kubectl delete pod "$pod" -n "$ns" --force --grace-period=0 2>/dev/null || true
         sleep 10
         # Refresh pod name karena setelah restart nama bisa berubah

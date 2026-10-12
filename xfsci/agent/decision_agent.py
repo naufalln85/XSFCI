@@ -166,14 +166,16 @@ KEBIJAKAN SELF-HEALING:
         else:
             fault_probs_str = f"{ml.anomaly_type.value}: {ml.confidence:.1%}"
 
-        # Tentukan target pod/service utama (mengunci target ke Root Cause GNN)
-        primary_target = getattr(ml, "root_cause_service", None) or m.target_pod
+        # Service yang sedang diinvestigasi di dossier ini
+        target_service = m.target_pod
+        gnn_rca_service = getattr(ml, "root_cause_service", None) or m.target_pod
 
         prompt = f"""Analisis situasi insiden Kubernetes berikut dan tentukan aksi self-healing terbaik.
 
 ## 🎯 GNN TOPOLOGY RCA CANDIDATES (MODEL ESTIMATES; VERIFY WITH OBSERVATIONS):
 - Global Cluster Risk: {ml.risk_score:.2f} (Graph Urgency)
-- TERSANGKA UTAMA (PRIMARY ROOT CAUSE): {primary_target}
+- TERSANGKA UTAMA CLUSTER (GNN ROOT CAUSE): {gnn_rca_service}
+- Service yang sedang diinvestigasi di dossier ini: {target_service}
 - Top-3 RCA Ranking (kandidat terurut; belum tentu akar masalah terkonfirmasi):
 {top3_str}
 - Fault Probability Distribution:
@@ -231,7 +233,8 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         
         prompt += f"""
 ## 🛡️ INSTRUKSI KEPUTUSAN SRE (ANTI-HALUSINASI):
-1. Target deployment WAJIB mengacu pada Tersangka Utama (Root Cause) hasil GNN: "{primary_target}". JANGAN menyalahkan pod hilir yang hanya korban cascade.
+1. Target deployment WAJIB mengacu pada service yang sedang diinvestigasi: "{target_service}".
+   (Jika GNN menduga akar masalah di service lain seperti "{gnn_rca_service}", catat di "reasoning", tetapi aksi perbaikan dossier ini harus menargetkan "{target_service}").
 2. Aksi WAJIB dipilih dari daftar enum terkunci:
    [no_op, restart_pod, scale_out, scale_in, rate_limit, migrate_pod, escalate]
 3. Jika confidence kamu >= 0.60, WAJIB ambil aksi konkret pemulihan (restart_pod, scale_out, dll). DILARANG memilih escalate hanya karena ragu jika bukti anomali jelas.
@@ -246,7 +249,7 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
 8. Jawab HANYA dalam format JSON valid berikut (tanpa teks penjelasan lain):
 {{
     "action": "<salah satu dari: no_op, restart_pod, scale_out, scale_in, rate_limit, migrate_pod, escalate>",
-    "target_deployment": "{primary_target}",
+    "target_deployment": "{target_service}",
     "target_namespace": "{m.namespace}",
     "parameters": {{
         "replicas_to_add": <number or null>,
@@ -309,11 +312,11 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
                 f"### LAPORAN SITUASI SRE (DATA AKTUAL):\n"
                 f"{prompt}\n\n"
                 f"TUGAS: Analisis data di atas dan tentukan tindakan perbaikan terbaik.\n"
-                f"WAJIB: Berikan HANYA respon dalam format JSON valid sesuai schema ActionDecision.\n"
-                f"JANGAN memanggil tool sistem apa pun (read_file, run_command, dll) karena semua data sudah lengkap di laporan ini."
+                f"WAJIB: Berikan HANYA respon dalam format JSON valid sesuai schema ActionDecision "
+                f"(tanpa teks pembuka/penutup, dan JANGAN mengeksekusi tool sistem eksternal)."
             )
 
-            # Format CLI headless: agy -p "<prompt>" --model <model> --dangerously-skip-permissions
+            # Format CLI terverifikasi: agy -p "<prompt>" --model <model> --dangerously-skip-permissions
             try:
                 cmd = [agy_bin, "-p", full_prompt, "--model", model_name, "--dangerously-skip-permissions"]
                 logger.info(f"🚀 Memanggil agy CLI --model {model_name} (timeout: {timeout}s)...")
@@ -330,7 +333,6 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
                 logger.warning(f"agy CLI timed out ({timeout}s) untuk {model_name}. out: {out_snippet} | err: {err_snippet}")
             except Exception as e:
                 logger.error(f"agy CLI --model {model_name} error: {e}")
-
             return None
 
         # ──────────────────────────────────────────────────────

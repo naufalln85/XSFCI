@@ -115,15 +115,15 @@ inject_memory_leak() {
 
     echo -e "${YELLOW}   Metode: Alokasi memori bertahap menggunakan shell /dev/urandom${NC}"
 
-    # Alokasi memori 50MB setiap 5 detik
+    # Alokasi memori 100MB setiap 3 detik agar melampaui ambang batas >80% SOP
     kubectl exec -n "$ns" "$pod" -- sh -c "
         echo '🔥 XFSCI Chaos: Memory leak started';
         i=0;
-        while [ \$i -lt $((dur / 5)) ]; do
-            head -c 52428800 /dev/urandom > /tmp/chaos_mem_\$i 2>/dev/null || true;
-            echo \"  Allocated block \$i (50MB)\";
+        while [ \$i -lt $((dur / 3)) ]; do
+            head -c 104857600 /dev/urandom > /tmp/chaos_mem_\$i 2>/dev/null || true;
+            echo \"  Allocated block \$i (100MB)\";
             i=\$((i + 1));
-            sleep 5;
+            sleep 3;
         done;
         echo '🛑 XFSCI Chaos: Memory leak injection completed';
     " &
@@ -193,8 +193,8 @@ inject_crash_loop() {
         echo -e "${RED}   💀 Kill attempt ${i}/${iterations} on ${pod}...${NC}"
         # Linux kernel mengabaikan SIGKILL (kill -9) ke PID 1 dari dalam namespace container.
         # Gunakan SIGSEGV/SIGTERM atau pkill untuk memaksa container crash & restart.
-        kubectl exec -n "$ns" "$pod" -- sh -c "kill -11 1 2>/dev/null || kill -15 1 2>/dev/null || pkill -9 -f python 2>/dev/null || pkill -9 -f java 2>/dev/null || pkill -9 -f node 2>/dev/null || kill -9 1 2>/dev/null" 2>/dev/null || \
-        kubectl delete pod "$pod" -n "$ns" --force --grace-period=0 2>/dev/null || true
+        kubectl exec -n "$ns" "$pod" -- sh -c "kill -9 -1 2>/dev/null || pkill -9 -f python 2>/dev/null" 2>/dev/null || true
+        kubectl delete pod "$pod" -n "$ns" --now 2>/dev/null || true
         sleep 10
         # Refresh pod name karena setelah restart nama bisa berubah
         pod=$(find_pod "$DEPLOYMENT" "$ns")

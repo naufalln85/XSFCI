@@ -114,8 +114,8 @@ if [[ -n "$CHAOS_TYPE" ]]; then
     # Jalankan gangguan di background agar aktif saat Orchestrator menganalisis
     bash "${SCRIPT_DIR}/inject_chaos.sh" "$CHAOS_TYPE" "$DEPLOYMENT" "$NAMESPACE" 180 &
     CHAOS_BG_PID=$!
-    echo -e "${CYAN}   ⏳ Menunggu 20 detik agar gangguan terdeteksi di klaster dan Prometheus...${NC}"
-    sleep 20
+    echo -e "${CYAN}   ⏳ Menunggu 40 detik agar gangguan terakumulasi dan terdeteksi di Prometheus...${NC}"
+    sleep 40
     echo ""
 else
     echo -e "${CYAN}[4/5] ⏭️ Chaos injection dilewati (gunakan --chaos <tipe> untuk mengaktifkan)${NC}"

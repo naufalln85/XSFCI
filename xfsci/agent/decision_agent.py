@@ -277,8 +277,8 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
         sandbox_on = self.antigravity_config.get("sandbox_mode", True)
         primary_model = self.antigravity_config.get("model_priority", "gemini-3.8-flash-high")
         fallback_model = self.antigravity_config.get("fallback_model", "claude-opus-4-6-thinking")
-        primary_timeout = int(self.antigravity_config.get("primary_timeout_seconds", 30))
-        fallback_timeout = int(self.antigravity_config.get("fallback_timeout_seconds", 90))
+        primary_timeout = int(self.antigravity_config.get("primary_timeout_seconds", 60))
+        fallback_timeout = int(self.antigravity_config.get("fallback_timeout_seconds", 60))
 
         # ──────────────────────────────────────────────────────
         # Jalur 1 (Sinkron): Antigravity CLI — `agy -p`

@@ -174,11 +174,11 @@ ai_agent:
     enabled: true
     model_priority: "gemini-3.8-flash-high"      # Prioritas: Gemini 3.8 Flash (High) — Cepat & Responsif (1-2s)
     fallback_model: "claude-opus-4-6-thinking"   # Fallback: Claude Opus 4.6 (Thinking) — Deep SRE Reasoning
-    primary_timeout_seconds: 30                  # Timeout Gemini Flash: 30 detik
-    fallback_timeout_seconds: 90                 # Timeout Claude Opus Thinking: 90 detik
+    primary_timeout_seconds: 60                  # Timeout Gemini Flash: 60 detik (cukup untuk prompt telemetri besar)
+    fallback_timeout_seconds: 60                 # Timeout Claude Opus Thinking: 60 detik (terbukti cukup, respon dalam 46s)
     sandbox_mode: true                           # Enforce execution inside protected sandbox
     allowed_commands: []                         # LLM tidak mendapat akses shell; orchestrator memakai Kubernetes API
-    timeout_seconds: 90
+    timeout_seconds: 60
     retry_attempts: 2
 
 

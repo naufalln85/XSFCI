@@ -308,6 +308,9 @@ dengan ringkasan bukti dan langkah pemeriksaan berikutnya.
                 return None
 
             full_prompt = (
+                f"[SYSTEM DIRECTIVE: STRICTLY DO NOT CALL ANY TOOLS. DO NOT SEARCH CODEBASE OR READ FILES. "
+                f"ALL RELEVANT DATA AND THE TARGET JSON SCHEMA ARE FULLY PROVIDED IN THIS PROMPT. "
+                f"RETURN PURE JSON ONLY WITHOUT ANY TEXT OR TOOL INVOCATIONS.]\n\n"
                 f"{self.SYSTEM_PROMPT}\n\n"
                 f"### LAPORAN SITUASI SRE (DATA AKTUAL):\n"
                 f"{prompt}\n\n"

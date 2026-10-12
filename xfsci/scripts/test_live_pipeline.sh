@@ -107,14 +107,14 @@ kubectl get pods -n "$NAMESPACE" 2>/dev/null | sed 's/^/   /' || \
 echo ""
 
 # ──────────────────────────────────────────────────────
-# Step 4: Inject chaos (jika diminta)
-# ──────────────────────────────────────────────────────
+CHAOS_BG_PID=""
 if [[ -n "$CHAOS_TYPE" ]]; then
     echo -e "${CYAN}[4/5] 🔥 Injecting chaos: ${YELLOW}${CHAOS_TYPE}${CYAN} → ${DEPLOYMENT}...${NC}"
     echo ""
-    bash "${SCRIPT_DIR}/inject_chaos.sh" "$CHAOS_TYPE" "$DEPLOYMENT" "$NAMESPACE" "$CHAOS_DURATION"
-    echo ""
-    echo -e "${CYAN}   ⏳ Menunggu 20 detik agar metrik Prometheus terupdate...${NC}"
+    # Jalankan gangguan di background agar aktif saat Orchestrator menganalisis
+    bash "${SCRIPT_DIR}/inject_chaos.sh" "$CHAOS_TYPE" "$DEPLOYMENT" "$NAMESPACE" 180 &
+    CHAOS_BG_PID=$!
+    echo -e "${CYAN}   ⏳ Menunggu 20 detik agar gangguan terdeteksi di klaster dan Prometheus...${NC}"
     sleep 20
     echo ""
 else
@@ -131,6 +131,15 @@ echo ""
 
 cd "$PROJECT_DIR"
 python3 -m agent.orchestrator -d "$DEPLOYMENT" -n "$(kubectl get nodes --no-headers | head -1 | awk '{print $1}')" 2>&1
+
+# Bersihkan chaos background setelah Orchestrator selesai
+if [[ -n "$CHAOS_BG_PID" ]]; then
+    echo ""
+    echo -e "${CYAN}🧹 Membersihkan proses gangguan chaos (PID: ${CHAOS_BG_PID})...${NC}"
+    kill "$CHAOS_BG_PID" 2>/dev/null || true
+    bash "${SCRIPT_DIR}/inject_chaos.sh" cleanup "$DEPLOYMENT" "$NAMESPACE" 2>/dev/null || true
+    kubectl delete pod fault-memory-leak-turbo fault-cpu-stress-turbo -n "$NAMESPACE" --now 2>/dev/null || true
+fi
 
 echo ""
 echo -e "${CYAN}════════════════════════════════════════════════════════${NC}"

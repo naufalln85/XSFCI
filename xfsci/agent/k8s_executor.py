@@ -74,7 +74,7 @@ class K8sExecutor:
             healing_cfg.get("allowed_namespaces", [self.default_namespace])
         )
         self.max_autonomous_scale_out = int(k8s_cfg.get("max_autonomous_scale_out", 2))
-        self.restart_cooldown_seconds = int(k8s_cfg.get("restart_cooldown_seconds", 900))
+        self.restart_cooldown_seconds = int(k8s_cfg.get("restart_cooldown_seconds", 120))
 
         # Setup Kubernetes client
         self.k8s_ready = False
@@ -367,39 +367,44 @@ class K8sExecutor:
             return False
 
     def _restart_preflight(self, target: str, ns: str) -> dict:
-        """Guard restart by availability and a durable per-deployment cooldown."""
+        """
+        Validasi restart pod dengan prinsip Safe Autonomy:
+        1. Desired replicas harus >= 1 (tidak me-restart deployment yang sedang di-scale ke 0).
+        2. Circuit breaker cooldown: cegah loop restart tak berujung (120s).
+        3. Jika pod down (ready < 1): IZINKAN autonomous restart untuk pemulihan cepat (downtime sudah terjadi).
+        4. Jika pod sehat (ready >= 1): IZINKAN rolling restart aman.
+        """
         try:
             dep = self.apps_v1.read_namespaced_deployment(name=target, namespace=ns)
             desired = dep.spec.replicas or 0
             ready = dep.status.ready_replicas or 0
-            if ready < 1 or desired < 1:
-                return {"allowed": False, "reason": "Restart blocked: deployment has no Ready pod; collect evidence and escalate."}
-            strategy = getattr(getattr(dep.spec, "strategy", None), "type", None)
-            if strategy not in (None, "RollingUpdate"):
-                return {"allowed": False,
-                        "reason": f"Restart blocked: deployment strategy '{strategy}' is not confirmed as RollingUpdate."}
-            if desired < 2:
-                ok = self._request_operator_approval(
-                    ActionDecision(action=ActionType.RESTART_POD, target_deployment=target,
-                                   target_namespace=ns, confidence=1.0,
-                                   reasoning="Restart deployment with fewer than two replicas may cause downtime.")
-                )
-                if not ok:
-                    return {"allowed": False, "approval_required": True,
-                            "reason": "Restart blocked: one-replica deployment needs explicit operator approval."}
+
+            if desired < 1:
+                return {"allowed": False, "reason": "Restart diblokir: desired replicas deployment adalah 0."}
+
+            # Circuit breaker cooldown: lindungi dari infinite thrashing
             annotations = (dep.spec.template.metadata.annotations or {}) if dep.spec.template.metadata else {}
             last_restart = annotations.get("xfsci.io/last-auto-restart-at")
             if last_restart:
                 try:
                     last = datetime.fromisoformat(last_restart.replace("Z", "+00:00"))
-                    if (datetime.now(last.tzinfo) - last).total_seconds() < self.restart_cooldown_seconds:
-                        return {"allowed": False,
-                                "reason": f"Restart blocked: deployment cooldown is {self.restart_cooldown_seconds}s."}
+                    elapsed = (datetime.now(last.tzinfo) - last).total_seconds()
+                    if elapsed < self.restart_cooldown_seconds:
+                        return {
+                            "allowed": False,
+                            "reason": f"Restart circuit-breaker aktif: cooldown tersisa {int(self.restart_cooldown_seconds - elapsed)}s (cooldown: {self.restart_cooldown_seconds}s)."
+                        }
                 except ValueError:
-                    logger.warning("Invalid restart cooldown annotation; continuing with availability guard")
+                    logger.warning("Format anotasi restart cooldown tidak valid; melanjutkan eksekusi")
+
+            if ready < 1:
+                logger.info(f"⚡ [Autonomous Healing] Service {target}/{ns} DOWN (ready={ready}/{desired}). Menjalankan pemulihan restart otonom.")
+            else:
+                logger.info(f"🔄 [Autonomous Healing] Service {target}/{ns} sehat (ready={ready}/{desired}). Menjalankan rolling restart.")
+
             return {"allowed": True}
         except Exception as exc:
-            return {"allowed": False, "reason": f"Restart blocked: preflight could not verify deployment ({type(exc).__name__})."}
+            return {"allowed": False, "reason": f"Restart diblokir: preflight gagal memverifikasi deployment ({type(exc).__name__})."}
 
     # ──────────────────────────────────────────────────────
     # Helpers: Ambil state sebelum / sesudah

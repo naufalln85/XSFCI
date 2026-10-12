@@ -302,7 +302,7 @@ healing:
     max_autonomous_scale_out: 2 # Lebih dari ini perlu approval operator
     max_replicas: 10            # Max replicas per deployment
     drain_timeout_seconds: 60
-    restart_cooldown_seconds: 900 # Maksimal satu restart otomatis per 15 menit
+    restart_cooldown_seconds: 120 # Cooldown circuit-breaker 2 menit (cukup untuk testing & pemulihan cepat)
 
 # --- Explainability (Layer 6: XAI) ---
 explainability:

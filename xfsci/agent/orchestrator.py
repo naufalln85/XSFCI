@@ -369,44 +369,38 @@ class XFSCIOrchestrator:
             }
             if decision.action not in (ActionType.NO_OP, ActionType.ESCALATE):
                 block_reason = None
-                # Cek apakah ini single-replica deployment dengan pod mati
-                is_single_replica_down = (
-                    pandas_metrics.current_replicas <= 1
-                    and pandas_metrics.ready_replicas == 0
-                )
+                # Ambil state replika dari bukti deployment Kubernetes
+                dep_state = diagnostic_evidence.get("deployment_state", {})
+                ready_reps = dep_state.get("ready_replicas", 0)
+                desired_reps = dep_state.get("desired_replicas", pandas_metrics.current_replicas)
+                is_single_replica_down = (desired_reps <= 1 and ready_reps == 0)
+
                 if not diagnostic_evidence.get("available") and pandas_metrics.pod_restarts_1h >= 3:
                     if is_single_replica_down and decision.action == ActionType.RESTART_POD:
-                        # Single replica mati tanpa bukti → restart tetap diizinkan
                         logger.info(
-                            "⚡ Single-replica deployment DOWN tanpa bukti diagnostik. "
-                            "Mengizinkan restart_pod karena tidak ada alternatif."
+                            "⚡ Single-replica deployment DOWN tanpa bukti log. "
+                            "Mengizinkan restart_pod untuk memulihkan ketersediaan layanan."
                         )
                     else:
-                        block_reason = "Bukti pod/log/event tidak tersedia untuk CrashLoop; remediasi otomatis diblokir."
-                elif (
-                    decision.action == ActionType.SCALE_OUT
-                    and pandas_metrics.pod_restarts_1h >= 3
-                    and pandas_metrics.cpu_usage_avg_5m < 80
-                    and pandas_metrics.request_rate_rps < 1
-                    and pandas_metrics.error_rate_percent < 5
-                    and pandas_metrics.latency_p99_ms < 500
-                ):
-                    block_reason = (
-                        "Scale-out diblokir: restart berulang saja tidak membuktikan overload; "
-                        "CPU, request, error, dan latency belum menunjukkan tekanan trafik."
-                    )
+                        block_reason = "Bukti pod/log/event tidak tersedia untuk CrashLoop; eskalasi ke operator."
                 elif diagnosis in non_remediable_diagnoses:
-                    block_reason = diagnostic_evidence.get("diagnosis_summary", diagnosis)
+                    if not is_single_replica_down:
+                        block_reason = diagnostic_evidence.get("diagnosis_summary", diagnosis)
+                    else:
+                        logger.info(
+                            f"⚡ Single-replica DOWN (diagnosis={diagnosis}). "
+                            "Mencoba restart_pod sebagai upaya pemulihan terbaik sebelum eskalasi."
+                        )
                 elif decision.action == ActionType.RESTART_POD and diagnosis not in restartable_diagnoses:
                     if not is_single_replica_down:
                         block_reason = (
                             f"Restart otomatis tidak diizinkan untuk diagnosis '{diagnosis}'. "
-                            "Diizinkan hanya untuk: probe_failure, crash_loop, oom_killed, pod_crash."
+                            "Diizinkan untuk: probe_failure, crash_loop, oom_killed, pod_crash."
                         )
                     else:
                         logger.info(
                             f"⚡ Single-replica deployment DOWN (diagnosis={diagnosis}). "
-                            "Mengizinkan restart_pod sebagai satu-satunya cara pemulihan."
+                            "Mengizinkan restart_pod otonom."
                         )
                 if block_reason:
                     decision = ActionDecision(

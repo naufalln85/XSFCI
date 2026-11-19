@@ -47,12 +47,17 @@ ALLOWED_USER_IDS = [int(uid.strip()) for uid in allowed_raw.split(",") if uid.st
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Model Profiles
+# Model Profiles dengan Fallback Stabil
 MODELS_CATALOG = {
     "gemini": {
+        "id": "gemini-2.5-flash",
+        "name": "Gemini 2.5 Flash ⚡",
+        "desc": "Sangat cepat, kapasitas tinggi & stabil, optimal untuk monitoring & analisis.",
+    },
+    "gemini-preview": {
         "id": "gemini-3.8-flash",
-        "name": "Gemini 3.8 Flash ⚡",
-        "desc": "Sangat cepat, optimal untuk monitoring, query k3s, dan respons real-time.",
+        "name": "Gemini 3.8 Flash (Preview) 🚀",
+        "desc": "Versi eksperimental terbaru, performa tinggi.",
     },
     "claude": {
         "id": "claude-opus-4-6",
@@ -81,12 +86,12 @@ def is_authorized(user_id: int) -> bool:
     return user_id in ALLOWED_USER_IDS
 
 
-def _build_agent_config(model_key: str) -> LocalAgentConfig:
+def _build_agent_config(model_key: str, override_model_id: str = None) -> LocalAgentConfig:
     target = MODELS_CATALOG.get(model_key, MODELS_CATALOG["gemini"])
-    model_id = target["id"]
+    model_id = override_model_id or target["id"]
 
     api_key = None
-    if model_key == "gemini" and GEMINI_API_KEY:
+    if "gemini" in model_key and GEMINI_API_KEY:
         api_key = GEMINI_API_KEY
     elif model_key == "claude" and ANTHROPIC_API_KEY:
         api_key = ANTHROPIC_API_KEY
@@ -109,7 +114,7 @@ def _build_agent_config(model_key: str) -> LocalAgentConfig:
     return LocalAgentConfig(**config_kwargs)
 
 
-async def init_agent(model_key: str):
+async def init_agent(model_key: str, override_model_id: str = None):
     """Menginisialisasi atau mengganti sesi Agent dengan model pilihan."""
     global antigravity_agent, agent_context_manager, current_model_key
 
@@ -128,8 +133,9 @@ async def init_agent(model_key: str):
             antigravity_agent = None
 
         try:
-            logger.info(f"Menginisialisasi model: {target_config['name']}")
-            agent_cfg = _build_agent_config(model_key)
+            active_id = override_model_id or target_config['id']
+            logger.info(f"Menginisialisasi model: {target_config['name']} ({active_id})")
+            agent_cfg = _build_agent_config(model_key, active_id)
             agent_obj = Agent(agent_cfg)
             antigravity_agent = await agent_obj.__aenter__()
             agent_context_manager = agent_obj
@@ -161,7 +167,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 *Perintah:*\n"
         "• `/model` — Ganti model (Gemini ⚡ / Claude 🧠)\n"
         "• `/start` — Info status bot\n\n"
-        "💡 *Tips:* Anda juga bisa langsung *mengirimkan file/dokumen* (PDF, TXT, DOCX) ke bot ini untuk dipelajari!"
+        "💡 *Tips:* Anda bisa langsung *mengirimkan file dokumen lomba Huawei ICT* (PDF, Word, TXT) ke bot ini!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -181,15 +187,17 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"_{active_model.get('desc')}_\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "Ganti model:\n"
-            "• `/model gemini` → Gemini 3.8 Flash ⚡\n"
-            "• `/model claude` → Claude Opus 4.6 🧠\n"
+            "• `/model gemini` → Gemini 2.5 Flash ⚡ (Paling Stabil & Cepat)\n"
+            "• `/model claude` → Claude Opus 4.6 🧠 (Thinking)\n"
         )
         await update.message.reply_text(text, parse_mode="Markdown")
         return
 
     target = args[0].lower().strip()
-    if target in ["gemini", "flash", "3.8"]:
+    if target in ["gemini", "flash", "stable"]:
         target_key = "gemini"
+    elif target in ["preview", "3.8"]:
+        target_key = "gemini-preview"
     elif target in ["claude", "opus", "4.6", "thinking"]:
         target_key = "claude"
     else:
@@ -209,10 +217,9 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stream_chat_to_telegram(prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mengirim prompt ke Agent dan melakukan streaming update live ke Telegram."""
+    """Mengirim prompt ke Agent dengan auto-retry saat 503 high demand."""
     active_model_name = MODELS_CATALOG.get(current_model_key, {}).get("name", "AI")
 
-    # Kirim status "Typing..."
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action=ChatAction.TYPING
     )
@@ -225,54 +232,78 @@ async def stream_chat_to_telegram(prompt: str, update: Update, context: ContextT
         await status_msg.edit_text("⚠️ AI Agent belum siap. Coba ganti model dengan `/model gemini`.")
         return
 
-    try:
-        logger.info(f"Mengirim prompt ke {active_model_name}: {prompt[:80]}...")
-        
-        # Panggil Antigravity Agent chat
-        response = await antigravity_agent.chat(prompt)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"[Attempt {attempt+1}] Mengirim prompt ke {active_model_name}...")
+            response = await antigravity_agent.chat(prompt)
 
-        full_reply = ""
-        last_edit_time = time.time()
-        token_count = 0
+            full_reply = ""
+            last_edit_time = time.time()
 
-        async for token in response:
-            full_reply += token
-            token_count += 1
+            async for token in response:
+                full_reply += token
 
-            # Update tampilan Telegram setiap 2 detik agar tidak rate-limited
-            now = time.time()
-            if now - last_edit_time > 2.0 and len(full_reply.strip()) > 10:
-                last_edit_time = now
-                preview_text = full_reply + " ▌"
-                if len(preview_text) <= 4000:
+                now = time.time()
+                if now - last_edit_time > 2.0 and len(full_reply.strip()) > 10:
+                    last_edit_time = now
+                    preview_text = full_reply + " ▌"
+                    if len(preview_text) <= 4000:
+                        try:
+                            await status_msg.edit_text(preview_text)
+                        except Exception:
+                            pass
+
+            logger.info(f"Selesai streaming. Total karakter: {len(full_reply)}")
+
+            if not full_reply.strip():
+                full_reply = "✅ (Instruksi selesai diproses oleh AI Agent)"
+
+            if len(full_reply) > 4000:
+                for i in range(0, len(full_reply), 4000):
+                    await update.message.reply_text(full_reply[i : i + 4000])
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text(full_reply)
+
+            return  # Berhasil, keluar dari fungsi!
+
+        except Exception as e:
+            err_str = str(e)
+            logger.warning(f"Error chat pada percobaan {attempt+1}: {err_str}")
+
+            # Jika terkena 503 (Server High Demand), lakukan auto-retry dengan jeda
+            if "503" in err_str or "high demand" in err_str.lower() or "unavailable" in err_str.lower():
+                if attempt < max_retries - 1:
+                    wait_sec = (attempt + 1) * 3
+                    await status_msg.edit_text(
+                        f"⏳ Server Google sedang padat traffic (503). Mencoba kembali otomatis dalam {wait_sec} detik... ({attempt+1}/{max_retries})"
+                    )
+                    await asyncio.sleep(wait_sec)
+                    continue
+                else:
+                    # Percobaan terakhir gagal, coba fallback otomatis ke model stabil
+                    await status_msg.edit_text(
+                        "⚠️ Server model ini sedang penuh antrian. Sedang mengalihkan ke model cadangan stabil..."
+                    )
+                    await init_agent("gemini", override_model_id="gemini-2.5-flash")
                     try:
-                        await status_msg.edit_text(preview_text)
-                    except Exception:
-                        pass  # Abaikan error minor jika Telegram belum berubah
-
-        logger.info(f"Selesai streaming. Total karakter: {len(full_reply)}")
-
-        if not full_reply.strip():
-            full_reply = "✅ (Instruksi selesai diproses oleh AI Agent)"
-
-        # Kirim hasil akhir
-        if len(full_reply) > 4000:
-            for i in range(0, len(full_reply), 4000):
-                await update.message.reply_text(full_reply[i : i + 4000])
-            await status_msg.delete()
-        else:
-            await status_msg.edit_text(full_reply)
-
-    except asyncio.TimeoutError:
-        logger.error("Chat timeout.")
-        await status_msg.edit_text("⏱️ Waktu respons habis (timeout). Coba ajukan pertanyaan yang lebih spesifik.")
-    except Exception as e:
-        logger.error(f"Error chat: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ Terjadi kesalahan saat memproses:\n`{str(e)}`")
+                        resp_fallback = await antigravity_agent.chat(prompt)
+                        reply_fb = ""
+                        async for t in resp_fallback:
+                            reply_fb += t
+                        await status_msg.edit_text(reply_fb if reply_fb.strip() else "✅ Selesai.")
+                        return
+                    except Exception as fb_err:
+                        await status_msg.edit_text(f"❌ Server Google saat ini sedang sangat sibuk:\n`{str(fb_err)}`\nSilakan coba lagi dalam beberapa saat.")
+                        return
+            else:
+                # Error lain yang bukan 503
+                await status_msg.edit_text(f"❌ Terjadi kesalahan:\n`{err_str}`")
+                return
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Menangani pesan teks biasa."""
     user_id = update.effective_user.id
     if not is_authorized(user_id):
         await update.message.reply_text("⛔ Akses ditolak.")
@@ -286,7 +317,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Menangani pengunggahan file/dokumen dari Telegram."""
     user_id = update.effective_user.id
     if not is_authorized(user_id):
         await update.message.reply_text("⛔ Akses ditolak.")
@@ -306,7 +336,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tg_file.download_to_drive(str(file_path))
         await download_msg.edit_text(f"📄 File `{file_name}` berhasil diterima!\nMeminta Antigravity mempelajari isi file...", parse_mode="Markdown")
 
-        # Buat prompt agar agent membaca dan menganalisis file
         prompt = (
             f"Pengguna baru saja mengunggah file bernama '{file_name}' yang disimpan di path '{file_path}'. "
             f"Buka dan pelajari isi file tersebut secara mendalam. "
@@ -358,12 +387,11 @@ async def main():
         return
 
     print("=" * 65)
-    print("🤖 XFSCI Antigravity Telegram Bot — Dual Brain")
-    print("⚡ Gemini 3.8 Flash  |  🧠 Claude Opus 4.6 (Thinking)")
+    print("🤖 XFSCI Antigravity Telegram Bot — Dual Brain (Auto-Retry & Fallback)")
+    print("⚡ Gemini Flash (Stabil & Cepat) | 🧠 Claude Opus 4.6 (Thinking)")
     print(f"📁 Folder Upload : {UPLOAD_DIR}")
     print("=" * 65)
 
-    # Inisialisasi default model
     success, msg = await init_agent("gemini")
     if not success:
         print(f"⚠️ Inisialisasi awal: {msg}")
@@ -371,9 +399,7 @@ async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("model", model_command))
-    # Handler pesan teks
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # Handler file dokumen (PDF, TXT, DOCX, dll)
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     await run_bot_loop(app)

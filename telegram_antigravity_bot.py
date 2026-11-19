@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from telegram import Update
 from telegram.constants import ChatAction
@@ -32,17 +33,19 @@ except ImportError:
     ANTIGRAVITY_AVAILABLE = False
 
 # ==============================================================================
-# KONFIGURASI BOT
+# KONFIGURASI BOT & MODEL
 # ==============================================================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-
-# API Key opsional — jika kosong, SDK akan pakai sesi `agy` login yang sudah ada
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
 # User ID Telegram yang diizinkan (opsional)
 allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 ALLOWED_USER_IDS = [int(uid.strip()) for uid in allowed_raw.split(",") if uid.strip().isdigit()]
+
+# Folder untuk menyimpan file upload dari user
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 # Model Profiles
 MODELS_CATALOG = {
@@ -79,32 +82,24 @@ def is_authorized(user_id: int) -> bool:
 
 
 def _build_agent_config(model_key: str) -> LocalAgentConfig:
-    """
-    Membuat konfigurasi agent.
-    - Jika ada API key di .env, gunakan itu (mode standalone).
-    - Jika TIDAK ada API key, SDK otomatis pakai sesi login `agy` (mode Antigravity account).
-      Ini memungkinkan akses ke SEMUA model (Claude, Gemini, dll) tanpa API key terpisah.
-    """
     target = MODELS_CATALOG.get(model_key, MODELS_CATALOG["gemini"])
     model_id = target["id"]
 
-    # Cek apakah ada API key eksplisit di environment
     api_key = None
     if model_key == "gemini" and GEMINI_API_KEY:
         api_key = GEMINI_API_KEY
     elif model_key == "claude" and ANTHROPIC_API_KEY:
         api_key = ANTHROPIC_API_KEY
 
-    # Buat konfigurasi — tanpa api_key berarti pakai sesi agy login
     config_kwargs = dict(
         model=model_id,
         system_instructions=(
             "Anda adalah asisten AI Antigravity untuk sistem XFSCI "
-            "(Explainable Federated Self-Healing Cloud Infrastructure). "
+            "(Explainable Federated Self-Healing Cloud Infrastructure) dan persiapan Lomba Huawei ICT. "
             "Anda menguasai Kubernetes k3s, GNN topology, Prometheus, "
             "AI Agent RL-based, Federated Learning, dan XAI. "
-            "Berikan respons yang terstruktur, jelas, dan solutif. "
-            "Anda memiliki akses ke terminal server untuk menjalankan perintah."
+            "Berikan respons yang terstruktur, jelas, to-the-point, dan solutif. "
+            "Jika pengguna mengunggah dokumen lomba atau file arsitektur, pelajari dan buatkan ringkasan serta strategi terbaik."
         ),
         capabilities=CapabilitiesConfig(),
     )
@@ -119,12 +114,11 @@ async def init_agent(model_key: str):
     global antigravity_agent, agent_context_manager, current_model_key
 
     if not ANTIGRAVITY_AVAILABLE:
-        return False, "Antigravity SDK tidak terpasang. Jalankan: pip install google-antigravity"
+        return False, "Antigravity SDK tidak terpasang."
 
     target_config = MODELS_CATALOG.get(model_key, MODELS_CATALOG["gemini"])
 
     async with agent_lock:
-        # Tutup sesi agent sebelumnya jika ada
         if agent_context_manager is not None:
             try:
                 await agent_context_manager.__aexit__(None, None, None)
@@ -144,15 +138,7 @@ async def init_agent(model_key: str):
             return True, f"Model berhasil diubah ke *{target_config['name']}*"
         except Exception as e:
             logger.error(f"Gagal menginisialisasi agent: {e}")
-            hint = ""
-            err_str = str(e).lower()
-            if "api key" in err_str or "authentication" in err_str or "credential" in err_str:
-                hint = (
-                    "\n\n💡 *Solusi:*\n"
-                    "1. Jalankan `agy` di terminal server dan login dengan akun Google Anda, ATAU\n"
-                    "2. Tambahkan `GEMINI_API_KEY` (gratis) ke file `.env`"
-                )
-            return False, f"{str(e)}{hint}"
+            return False, str(e)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -160,10 +146,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
 
     if not is_authorized(user_id):
-        await update.message.reply_text(
-            f"⛔ Akses ditolak.\nUser ID Anda: `{user_id}`",
-            parse_mode="Markdown",
-        )
+        await update.message.reply_text(f"⛔ Akses ditolak. ID: `{user_id}`", parse_mode="Markdown")
         return
 
     active_model_info = MODELS_CATALOG.get(current_model_key, {})
@@ -176,9 +159,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📡 Status: *{agent_status}*\n"
         f"🆔 ID: `{user_id}`\n\n"
         "🛠 *Perintah:*\n"
-        "• `/model` — Lihat/ganti model (Gemini ⚡ / Claude 🧠)\n"
-        "• `/start` — Info dan status bot\n\n"
-        "Kirim pertanyaan atau instruksi langsung di sini!"
+        "• `/model` — Ganti model (Gemini ⚡ / Claude 🧠)\n"
+        "• `/start` — Info status bot\n\n"
+        "💡 *Tips:* Anda juga bisa langsung *mengirimkan file/dokumen* (PDF, TXT, DOCX) ke bot ini untuk dipelajari!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -192,12 +175,10 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         active_model = MODELS_CATALOG.get(current_model_key, {})
-        auth_mode = "🔑 API Key" if (GEMINI_API_KEY or ANTHROPIC_API_KEY) else "👤 Sesi Antigravity (agy login)"
         text = (
             "🧠 *Pilihan Model:*\n\n"
             f"📌 *Aktif:* {active_model.get('name')}\n"
-            f"_{active_model.get('desc')}_\n"
-            f"🔐 Autentikasi: {auth_mode}\n\n"
+            f"_{active_model.get('desc')}_\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "Ganti model:\n"
             "• `/model gemini` → Gemini 3.8 Flash ⚡\n"
@@ -222,17 +203,77 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     success, msg = await init_agent(target_key)
     if success:
-        await status_msg.edit_text(
-            f"✅ {msg}\n_{MODELS_CATALOG[target_key]['desc']}_",
-            parse_mode="Markdown",
-        )
+        await status_msg.edit_text(f"✅ {msg}\n_{MODELS_CATALOG[target_key]['desc']}_", parse_mode="Markdown")
     else:
-        await status_msg.edit_text(f"❌ Gagal:\n{msg}", parse_mode="Markdown")
+        await status_msg.edit_text(f"❌ Gagal:\n`{msg}`", parse_mode="Markdown")
+
+
+async def stream_chat_to_telegram(prompt: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mengirim prompt ke Agent dan melakukan streaming update live ke Telegram."""
+    active_model_name = MODELS_CATALOG.get(current_model_key, {}).get("name", "AI")
+
+    # Kirim status "Typing..."
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action=ChatAction.TYPING
+    )
+    status_msg = await update.message.reply_text(
+        f"⏳ *{active_model_name}* sedang menganalisis...",
+        parse_mode="Markdown",
+    )
+
+    if antigravity_agent is None:
+        await status_msg.edit_text("⚠️ AI Agent belum siap. Coba ganti model dengan `/model gemini`.")
+        return
+
+    try:
+        logger.info(f"Mengirim prompt ke {active_model_name}: {prompt[:80]}...")
+        
+        # Panggil Antigravity Agent chat
+        response = await antigravity_agent.chat(prompt)
+
+        full_reply = ""
+        last_edit_time = time.time()
+        token_count = 0
+
+        async for token in response:
+            full_reply += token
+            token_count += 1
+
+            # Update tampilan Telegram setiap 2 detik agar tidak rate-limited
+            now = time.time()
+            if now - last_edit_time > 2.0 and len(full_reply.strip()) > 10:
+                last_edit_time = now
+                preview_text = full_reply + " ▌"
+                if len(preview_text) <= 4000:
+                    try:
+                        await status_msg.edit_text(preview_text)
+                    except Exception:
+                        pass  # Abaikan error minor jika Telegram belum berubah
+
+        logger.info(f"Selesai streaming. Total karakter: {len(full_reply)}")
+
+        if not full_reply.strip():
+            full_reply = "✅ (Instruksi selesai diproses oleh AI Agent)"
+
+        # Kirim hasil akhir
+        if len(full_reply) > 4000:
+            for i in range(0, len(full_reply), 4000):
+                await update.message.reply_text(full_reply[i : i + 4000])
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text(full_reply)
+
+    except asyncio.TimeoutError:
+        logger.error("Chat timeout.")
+        await status_msg.edit_text("⏱️ Waktu respons habis (timeout). Coba ajukan pertanyaan yang lebih spesifik.")
+    except Exception as e:
+        logger.error(f"Error chat: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ Terjadi kesalahan saat memproses:\n`{str(e)}`")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menangani pesan teks biasa."""
     user_id = update.effective_user.id
-
     if not is_authorized(user_id):
         await update.message.reply_text("⛔ Akses ditolak.")
         return
@@ -241,52 +282,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
-    active_model_name = MODELS_CATALOG.get(current_model_key, {}).get("name", "AI")
+    await stream_chat_to_telegram(user_text, update, context)
 
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id, action=ChatAction.TYPING
-    )
-    status_msg = await update.message.reply_text(
-        f"⏳ *{active_model_name}* sedang memproses...",
-        parse_mode="Markdown",
-    )
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menangani pengunggahan file/dokumen dari Telegram."""
+    user_id = update.effective_user.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("⛔ Akses ditolak.")
+        return
+
+    doc = update.message.document
+    if not doc:
+        return
+
+    file_name = doc.file_name or "uploaded_file"
+    file_path = UPLOAD_DIR / file_name
+
+    download_msg = await update.message.reply_text(f"📥 Mengunduh file `{file_name}`...", parse_mode="Markdown")
 
     try:
-        if antigravity_agent is not None:
-            response = await antigravity_agent.chat(user_text)
-            full_reply = ""
-            async for token in response:
-                full_reply += token
-            if not full_reply.strip():
-                full_reply = "(Selesai tanpa balasan teks)"
-        else:
-            full_reply = (
-                "⚠️ *AI Agent belum aktif.*\n\n"
-                "Pastikan Anda sudah login `agy` di server,\n"
-                "atau tambahkan `GEMINI_API_KEY` ke file `.env`.\n"
-                "Ketik `/model` untuk info lebih lanjut."
-            )
+        tg_file = await doc.get_file()
+        await tg_file.download_to_drive(str(file_path))
+        await download_msg.edit_text(f"📄 File `{file_name}` berhasil diterima!\nMeminta Antigravity mempelajari isi file...", parse_mode="Markdown")
 
-        if len(full_reply) > 4000:
-            for i in range(0, len(full_reply), 4000):
-                await update.message.reply_text(full_reply[i : i + 4000])
-            await status_msg.delete()
-        else:
-            await status_msg.edit_text(
-                full_reply,
-                parse_mode="Markdown" if antigravity_agent is None else None,
-            )
+        # Buat prompt agar agent membaca dan menganalisis file
+        prompt = (
+            f"Pengguna baru saja mengunggah file bernama '{file_name}' yang disimpan di path '{file_path}'. "
+            f"Buka dan pelajari isi file tersebut secara mendalam. "
+            f"Jika file berkaitan dengan Lomba Huawei ICT atau arsitektur sistem, berikan analisis komprehensif, "
+            f"ringkasan poin penting, serta rekomendasi langkah strategis selanjutnya."
+        )
+
+        await stream_chat_to_telegram(prompt, update, context)
 
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await status_msg.edit_text(f"❌ Error:\n`{str(e)}`")
+        logger.error(f"Gagal memproses dokumen: {e}")
+        await download_msg.edit_text(f"❌ Gagal memproses file:\n`{str(e)}`")
 
 
 async def run_bot_loop(app):
     async with app:
         await app.start()
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        print("🚀 Bot Telegram siap dan mendengarkan chat!")
+        print("🚀 Bot Telegram siap dan mendengarkan chat & file!")
         print("   Buka: https://t.me/xsfci_antigravity_bot")
 
         stop_event = asyncio.Event()
@@ -321,30 +360,21 @@ async def main():
     print("=" * 65)
     print("🤖 XFSCI Antigravity Telegram Bot — Dual Brain")
     print("⚡ Gemini 3.8 Flash  |  🧠 Claude Opus 4.6 (Thinking)")
-    print(f"🔑 Token: {TELEGRAM_BOT_TOKEN[:10]}...[TERSEMBUNYI]")
-
-    # Info autentikasi
-    if GEMINI_API_KEY or ANTHROPIC_API_KEY:
-        print("🔐 Mode: API Key dari .env")
-    else:
-        print("👤 Mode: Sesi Antigravity (agy login)")
-        print("   Pastikan sudah menjalankan `agy` dan login terlebih dahulu!")
+    print(f"📁 Folder Upload : {UPLOAD_DIR}")
     print("=" * 65)
 
-    # Coba inisialisasi default model
+    # Inisialisasi default model
     success, msg = await init_agent("gemini")
     if not success:
-        print(f"⚠️ Gemini: {msg}")
-        # Fallback ke Claude
-        success2, msg2 = await init_agent("claude")
-        if not success2:
-            print(f"⚠️ Claude: {msg2}")
-            print("Bot berjalan tanpa AI Agent (akan memberi instruksi setup saat di-chat)")
+        print(f"⚠️ Inisialisasi awal: {msg}")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("model", model_command))
+    # Handler pesan teks
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Handler file dokumen (PDF, TXT, DOCX, dll)
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     await run_bot_loop(app)
 

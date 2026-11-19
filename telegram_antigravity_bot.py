@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 from telegram import Update
@@ -21,7 +22,7 @@ if env_path.exists():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 # Coba import Google Antigravity SDK
 try:
@@ -34,6 +35,7 @@ except ImportError:
 # KONFIGURASI BOT
 # ==============================================================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 # User ID Telegram yang diizinkan (ambil dari env ALLOWED_USER_IDS atau list kosong)
 allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
@@ -69,11 +71,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    status_engine = "✅ Antigravity Pro Aktif" if antigravity_agent else "⚠️ Standalone (Belum Ada Gemini API Key)"
     welcome_text = (
         f"👋 Halo *{user.first_name}*!\n\n"
         "🤖 *XFSCI Antigravity Agent Bot* siap digunakan.\n"
+        f"⚡ Status AI: *{status_engine}*\n"
         f"🆔 ID Telegram Anda: `{user_id}`\n\n"
-        "Kirim pertanyaan, perintah coding, atau instruksi troubleshooting cluster Anda di sini."
+        "Kirim pertanyaan atau instruksi troubleshooting cluster Anda di sini."
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -112,13 +116,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 full_reply += token
 
             if not full_reply.strip():
-                full_reply = "(Antigravity selesai memproses tanpa pesan teks balasan)"
+                full_reply = "(Antigravity selesai memproses tanpa pesan balasan teks)"
         else:
-            # Fallback jika SDK Antigravity belum terinstall/berjalan
+            # Fallback jika Antigravity belum terhubung karena belum ada API Key
             full_reply = (
-                "⚠️ *Antigravity SDK belum aktif di server.*\n"
-                f"Pesan Anda diterima: \"{user_text}\"\n\n"
-                "Pastikan dependensi `google-antigravity` sudah terpasang."
+                "⚠️ *Antigravity AI Agent belum aktif!*\n\n"
+                f"Pesan Anda diterima: \"_{user_text}_\"\n\n"
+                "📌 *Penyebab:* GEMINI_API_KEY belum diset di file `.env`.\n"
+                "👉 Dapatkan kunci gratis di: [Google AI Studio](https://aistudio.google.com/app/apikey)\n"
+                "Lalu tambahkan ke `.env`:\n`GEMINI_API_KEY=AIzaSy...`"
             )
 
         # Telegram limit 4096 karakter per pesan
@@ -127,14 +133,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(full_reply[i : i + 4000])
             await status_msg.delete()
         else:
-            await status_msg.edit_text(full_reply)
+            await status_msg.edit_text(full_reply, parse_mode="Markdown" if antigravity_agent is None else None)
 
     except Exception as e:
         logger.error(f"Error memproses pesan: {e}")
         await status_msg.edit_text(
             f"❌ Terjadi kesalahan saat memproses:\n`{str(e)}`",
-            parse_mode="Markdown",
         )
+
+
+async def run_bot_loop(app):
+    """Menjalankan polling bot Telegram secara asynchronous."""
+    async with app:
+        await app.start()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        print("🚀 Bot Telegram siap dan mendengarkan chat...")
+
+        stop_event = asyncio.Event()
+
+        # Handle SIGINT / SIGTERM gracefully jika didukung
+        loop = asyncio.get_running_loop()
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, stop_event.set)
+        except (NotImplementedError, AttributeError):
+            pass
+
+        try:
+            await stop_event.wait()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
+        finally:
+            print("\n[!] Menghentikan bot Telegram...")
+            await app.updater.stop()
+            await app.stop()
 
 
 async def main():
@@ -150,11 +182,16 @@ async def main():
     print(f"Bot Token: {TELEGRAM_BOT_TOKEN[:10]}...[TERSEMBUNYI]")
     print("=" * 60)
 
-    # Inisialisasi Antigravity jika tersedia
-    if ANTIGRAVITY_AVAILABLE:
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Cek apakah GEMINI_API_KEY tersedia untuk mengaktifkan Agent
+    if ANTIGRAVITY_AVAILABLE and GEMINI_API_KEY:
         try:
-            print("Menginisialisasi Google Antigravity Agent...")
+            print("Menginisialisasi Google Antigravity Agent dengan Gemini API Key...")
             agent_config = LocalAgentConfig(
+                api_key=GEMINI_API_KEY,
                 system_instructions=(
                     "Anda adalah asisten AI Antigravity untuk sistem XFSCI "
                     "(Explainable Federated Self-Healing Cloud Infrastructure). "
@@ -165,31 +202,21 @@ async def main():
             async with Agent(agent_config) as agent:
                 antigravity_agent = agent
                 print("✅ Antigravity Agent berhasil terhubung!")
-
-                app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-                app.add_handler(CommandHandler("start", start_command))
-                app.add_handler(
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-                )
-
-                print("🚀 Bot Telegram siap dan mendengarkan chat...")
-                await app.run_polling()
+                await run_bot_loop(app)
                 return
         except Exception as e:
             print(f"⚠️ Gagal menghubungkan Antigravity Agent: {e}")
             print("Menjalankan bot dalam mode standalone...")
+    elif not GEMINI_API_KEY:
+        print("⚠️ Catatan: GEMINI_API_KEY belum diset di .env")
+        print("👉 Bot tetap berjalan untuk menerima perintah.")
+        print("👉 Tambahkan GEMINI_API_KEY ke .env untuk mengaktifkan kecerdasan Antigravity.")
 
-    # Fallback jika Antigravity belum terkonfigurasi
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("🚀 Bot Telegram berjalan...")
-    await app.run_polling()
+    await run_bot_loop(app)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("\n[!] Bot dihentikan oleh pengguna.")
+        print("\n[!] Program selesai.")

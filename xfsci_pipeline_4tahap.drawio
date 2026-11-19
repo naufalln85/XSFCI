@@ -1,0 +1,67 @@
+<mxfile host="app.diagrams.net" modified="2026-10-26T09:25:00.000Z" agent="Mozilla/5.0" version="24.0.0">
+  <diagram id="xfsci-4stage-pipeline" name="XFSCI 4-Stage Closed-Loop Pipeline">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" background="#ffffff" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- TITLE HEADER -->
+        <mxCell id="title" value="&lt;div style=&quot;font-family:Helvetica; text-align:center;&quot;&gt;&lt;b style=&quot;font-size:18px; color:#0F172A;&quot;&gt;XFSCI: Level-4 Autonomous SRE Closed-Loop Architecture&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:12px; color:#475569;&quot;&gt;Arsitektur Dual-Mechanism: Otak Penalaran (Agentic AI) vs. Rem Pengendali Risiko (Safety Gate &amp;amp; Sandbox)&lt;/span&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="235" y="80" width="700" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- CARD 1: PERSEPSI -->
+        <mxCell id="card1" value="&lt;div style=&quot;background-color:#1D4ED8; color:#FFFFFF; padding:10px; border-radius:8px 8px 0 0; font-family:Helvetica; font-size:14px; font-weight:bold; text-align:center;&quot;&gt;1. PERSEPSI&lt;br&gt;&lt;span style=&quot;font-size:11px; font-weight:normal; opacity:0.9;&quot;&gt;DualHead GATv2 GNN&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;padding:12px; font-family:Helvetica; font-size:12px; color:#0F172A; line-height:1.6; text-align:left;&quot;&gt;&lt;b style=&quot;color:#1D4ED8;&quot;&gt;•&lt;/b&gt; 23 Fitur Telemetri ML&lt;br&gt;&lt;b style=&quot;color:#1D4ED8;&quot;&gt;•&lt;/b&gt; Topologi Graf Mikroservis&lt;br&gt;&lt;b style=&quot;color:#1D4ED8;&quot;&gt;•&lt;/b&gt; Deteksi Akar Masalah (RCA)&lt;br&gt;&lt;b style=&quot;color:#1D4ED8;&quot;&gt;•&lt;/b&gt; Waktu Inferensi &amp;lt; 5ms&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#EFF6FF;strokeColor=#1D4ED8;strokeWidth=2;shadow=1;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="40" y="180" width="230" height="190" as="geometry" />
+        </mxCell>
+
+        <!-- CARD 2: KOGNISI (OTAK) -->
+        <mxCell id="card2" value="&lt;div style=&quot;background-color:#6D28D9; color:#FFFFFF; padding:10px; border-radius:8px 8px 0 0; font-family:Helvetica; font-size:14px; font-weight:bold; text-align:center;&quot;&gt;2. KOGNISI (OTAK)&lt;br&gt;&lt;span style=&quot;font-size:11px; font-weight:normal; opacity:0.9;&quot;&gt;Multi-Model Agentic AI&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;padding:12px; font-family:Helvetica; font-size:12px; color:#0F172A; line-height:1.6; text-align:left;&quot;&gt;&lt;b style=&quot;color:#6D28D9;&quot;&gt;•&lt;/b&gt; Claude Opus Thinking (Deep)&lt;br&gt;&lt;b style=&quot;color:#6D28D9;&quot;&gt;•&lt;/b&gt; Gemini 3.8 Flash (Failover)&lt;br&gt;&lt;b style=&quot;color:#6D28D9;&quot;&gt;•&lt;/b&gt; RAG SRE Runbooks (SOP)&lt;br&gt;&lt;b style=&quot;color:#6D28D9;&quot;&gt;•&lt;/b&gt; Penalaran Berbasis Bukti Riil&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F5F3FF;strokeColor=#6D28D9;strokeWidth=2;shadow=1;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="320" y="180" width="230" height="190" as="geometry" />
+        </mxCell>
+
+        <!-- CARD 3: SAFETY GATE (REM) -->
+        <mxCell id="card3" value="&lt;div style=&quot;background-color:#C2410C; color:#FFFFFF; padding:10px; border-radius:8px 8px 0 0; font-family:Helvetica; font-size:14px; font-weight:bold; text-align:center;&quot;&gt;3. SAFETY GATE (REM)&lt;br&gt;&lt;span style=&quot;font-size:11px; font-weight:normal; opacity:0.9;&quot;&gt;Sandbox &amp;amp; Risk Guardrail&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;padding:12px; font-family:Helvetica; font-size:12px; color:#0F172A; line-height:1.6; text-align:left;&quot;&gt;&lt;b style=&quot;color:#C2410C;&quot;&gt;•&lt;/b&gt; Matriks: Confidence x Risk&lt;br&gt;&lt;b style=&quot;color:#C2410C;&quot;&gt;•&lt;/b&gt; Uji Kloning xfsci-sandbox&lt;br&gt;&lt;b style=&quot;color:#C2410C;&quot;&gt;•&lt;/b&gt; Safe Inaction (no_op)&lt;br&gt;&lt;b style=&quot;color:#C2410C;&quot;&gt;•&lt;/b&gt; Human Escalation (escalate)&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF7ED;strokeColor=#C2410C;strokeWidth=2;shadow=1;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="600" y="180" width="230" height="190" as="geometry" />
+        </mxCell>
+
+        <!-- CARD 4: AKTUASI -->
+        <mxCell id="card4" value="&lt;div style=&quot;background-color:#047857; color:#FFFFFF; padding:10px; border-radius:8px 8px 0 0; font-family:Helvetica; font-size:14px; font-weight:bold; text-align:center;&quot;&gt;4. AKTUASI&lt;br&gt;&lt;span style=&quot;font-size:11px; font-weight:normal; opacity:0.9;&quot;&gt;Closed-Loop Kubernetes&lt;/span&gt;&lt;/div&gt;&lt;div style=&quot;padding:12px; font-family:Helvetica; font-size:12px; color:#0F172A; line-height:1.6; text-align:left;&quot;&gt;&lt;b style=&quot;color:#047857;&quot;&gt;•&lt;/b&gt; Precision Optimizer ML&lt;br&gt;&lt;b style=&quot;color:#047857;&quot;&gt;•&lt;/b&gt; API Patch &amp;amp; Rollout Rolling&lt;br&gt;&lt;b style=&quot;color:#047857;&quot;&gt;•&lt;/b&gt; Post-Action Health Check 30s&lt;br&gt;&lt;b style=&quot;color:#047857;&quot;&gt;•&lt;/b&gt; Automated Safe Rollback&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#ECFDF5;strokeColor=#047857;strokeWidth=2;shadow=1;overflow=hidden;" vertex="1" parent="1">
+          <mxGeometry x="880" y="180" width="230" height="190" as="geometry" />
+        </mxCell>
+
+        <!-- ARROW 1 -> 2 -->
+        <mxCell id="arrow1" value="Akar Masalah&lt;br&gt;&amp;amp; Risiko" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#475569;strokeWidth=2.5;endArrow=block;endFill=1;endSize=7;fontFamily=Helvetica;fontSize=10;fontColor=#475569;" edge="1" parent="1" source="card1" target="card2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ARROW 2 -> 3 -->
+        <mxCell id="arrow2" value="Rencana Aksi&lt;br&gt;&amp;amp; Confidence" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#475569;strokeWidth=2.5;endArrow=block;endFill=1;endSize=7;fontFamily=Helvetica;fontSize=10;fontColor=#475569;" edge="1" parent="1" source="card2" target="card3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ARROW 3 -> 4 -->
+        <mxCell id="arrow3" value="Aksi Lolos Uji&lt;br&gt;(Approved)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#047857;strokeWidth=2.5;endArrow=block;endFill=1;endSize=7;fontFamily=Helvetica;fontSize=10;fontColor=#047857;fontStyle=1;" edge="1" parent="1" source="card3" target="card4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- CLOSED LOOP FEEDBACK ARROW (ROLLBACK / VERIFICATION) -->
+        <mxCell id="feedbackLoop" value="Verifikasi Gagal ➔ Auto-Rollback ke Status Awal" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;strokeColor=#DC2626;strokeWidth=2;strokeFactor=1;dashed=1;endArrow=block;endFill=1;endSize=6;fontFamily=Helvetica;fontSize=11;fontColor=#DC2626;" edge="1" parent="1" source="card4" target="card3">
+          <mxGeometry x="-0.02" y="15" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="995" y="420" />
+              <mxPoint x="715" y="420" />
+            </Array>
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- BOTTOM PRINCIPLE BANNER -->
+        <mxCell id="banner" value="&lt;div style=&quot;font-family:Helvetica; font-size:12px; color:#1E293B; text-align:center;&quot;&gt;&lt;b style=&quot;color:#DC2626;&quot;&gt;Prinsip Kunci (Trustworthy SRE):&lt;/b&gt; Kemampuan sistem menolak bertindak (&lt;i&gt;Safe Abstention&lt;/i&gt;) saat bukti tidak cukup sama bernilainya dengan mengeksekusi perbaikan.&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8FAFC;strokeColor=#CBD5E1;strokeWidth=1;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="195" y="460" width="780" height="40" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

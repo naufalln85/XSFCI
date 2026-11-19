@@ -32,14 +32,37 @@ except ImportError:
     ANTIGRAVITY_AVAILABLE = False
 
 # ==============================================================================
-# KONFIGURASI BOT
+# KONFIGURASI BOT & MODEL
 # ==============================================================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
-# User ID Telegram yang diizinkan (ambil dari env ALLOWED_USER_IDS atau list kosong)
+# User ID Telegram yang diizinkan (opsional)
 allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
 ALLOWED_USER_IDS = [int(uid.strip()) for uid in allowed_raw.split(",") if uid.strip().isdigit()]
+
+# Model Profiles yang didukung
+MODELS_CATALOG = {
+    "gemini": {
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash ⚡",
+        "desc": "Sangat cepat, ringan, optimal untuk scraping metrik, command k3s, dan monitoring.",
+        "env_key": "GEMINI_API_KEY",
+    },
+    "claude": {
+        "id": "claude-opus-4-6",
+        "name": "Claude Opus 4.6 (Thinking) 🧠",
+        "desc": "Deep reasoning, analisis arsitektur, pemecahan masalah rumit, logika self-healing XFSCI.",
+        "env_key": "ANTHROPIC_API_KEY",
+    },
+}
+
+# State Global
+current_model_key = "gemini"  # Default awal
+antigravity_agent = None
+agent_context_manager = None
+agent_lock = asyncio.Lock()
 
 # Logging Setup
 logging.basicConfig(
@@ -48,15 +71,66 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# State Antigravity Agent
-antigravity_agent = None
-
 
 def is_authorized(user_id: int) -> bool:
     """Memeriksa apakah pengirim memiliki otorisasi."""
     if not ALLOWED_USER_IDS:
-        return True  # Terbuka jika belum diset
+        return True
     return user_id in ALLOWED_USER_IDS
+
+
+async def init_agent(model_key: str):
+    """Menginisialisasi atau mengganti sesi Agent dengan model pilihan."""
+    global antigravity_agent, agent_context_manager, current_model_key
+
+    if not ANTIGRAVITY_AVAILABLE:
+        logger.warning("Antigravity SDK tidak terinstall.")
+        return False, "Antigravity SDK tidak terpasang."
+
+    target_config = MODELS_CATALOG.get(model_key, MODELS_CATALOG["gemini"])
+    model_id = target_config["id"]
+    required_key_name = target_config["env_key"]
+    api_key_val = os.getenv(required_key_name, "").strip()
+
+    # Fallback jika model Claude tapi ANTHROPIC_API_KEY belum ada, cek GEMINI_API_KEY
+    if not api_key_val:
+        if model_key == "claude" and not api_key_val:
+            return False, f"Kunci `{required_key_name}` belum diset di `.env` untuk menggunakan Claude."
+        elif model_key == "gemini" and not api_key_val:
+            return False, f"Kunci `{required_key_name}` belum diset di `.env` untuk menggunakan Gemini."
+
+    async with agent_lock:
+        # Tutup sesi agent sebelumnya jika ada
+        if agent_context_manager is not None:
+            try:
+                await agent_context_manager.__aexit__(None, None, None)
+            except Exception as e:
+                logger.error(f"Error menutup agent sebelumnya: {e}")
+            agent_context_manager = None
+            antigravity_agent = None
+
+        try:
+            logger.info(f"Menginisialisasi model: {target_config['name']} ({model_id})")
+            agent_cfg = LocalAgentConfig(
+                model=model_id,
+                api_key=api_key_val,
+                system_instructions=(
+                    "Anda adalah asisten AI Antigravity untuk sistem XFSCI "
+                    "(Explainable Federated Self-Healing Cloud Infrastructure). "
+                    "Anda menguasai Kubernetes k3s, GNN topology, Prometheus, RL-based decision agent, "
+                    "dan explainability XAI. Berikan respons yang terstruktur, jelas, dan solutif."
+                ),
+                capabilities=CapabilitiesConfig(),
+            )
+            agent_obj = Agent(agent_cfg)
+            antigravity_agent = await agent_obj.__aenter__()
+            agent_context_manager = agent_obj
+            current_model_key = model_key
+            logger.info(f"✅ Berhasil mengaktifkan model {target_config['name']}")
+            return True, f"Model berhasil diubah ke *{target_config['name']}*"
+        except Exception as e:
+            logger.error(f"Gagal menginisialisasi agent: {e}")
+            return False, str(e)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -71,15 +145,68 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    status_engine = "✅ Antigravity Pro Aktif" if antigravity_agent else "⚠️ Standalone (Belum Ada Gemini API Key)"
+    active_model_info = MODELS_CATALOG.get(current_model_key, {})
     welcome_text = (
         f"👋 Halo *{user.first_name}*!\n\n"
-        "🤖 *XFSCI Antigravity Agent Bot* siap digunakan.\n"
-        f"⚡ Status AI: *{status_engine}*\n"
-        f"🆔 ID Telegram Anda: `{user_id}`\n\n"
-        "Kirim pertanyaan atau instruksi troubleshooting cluster Anda di sini."
+        "🤖 *XFSCI Antigravity Agent Bot*\n"
+        f"🧠 Model Aktif: *{active_model_info.get('name', 'None')}*\n"
+        f"🆔 ID Telegram: `{user_id}`\n\n"
+        "🛠 *Daftar Perintah:*\n"
+        "• `/model` : Lihat atau ganti model AI (Gemini 3.8 Flash / Claude Opus 4.6)\n"
+        "• `/start` : Info bot dan status\n\n"
+        "Kirim pertanyaan atau instruksi langsung di chat ini untuk dijawab oleh AI!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menangani perintah /model untuk melihat atau mengganti model."""
+    user_id = update.effective_user.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("⛔ Akses ditolak.")
+        return
+
+    args = context.args
+    if not args:
+        # Tampilkan status model saat ini dan cara ganti
+        active_model = MODELS_CATALOG.get(current_model_key, {})
+        text = (
+            "🧠 *Pilihan Model Antigravity:*\n\n"
+            f"📌 *Sedang Aktif:* {active_model.get('name')}\n"
+            f"_{active_model.get('desc')}_\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Untuk mengganti model, ketik perintah:\n"
+            "• `/model gemini`  → **Gemini 3.8 Flash** ⚡\n"
+            "• `/model claude`  → **Claude Opus 4.6 (Thinking)** 🧠\n"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+        return
+
+    target = args[0].lower().strip()
+    if target in ["gemini", "flash", "3.8"]:
+        target_key = "gemini"
+    elif target in ["claude", "opus", "4.6"]:
+        target_key = "claude"
+    else:
+        await update.message.reply_text(
+            "❌ Model tidak dikenali. Pilih antara `/model gemini` atau `/model claude`."
+        )
+        return
+
+    status_msg = await update.message.reply_text(
+        f"⏳ Sedang mengalihkan ke *{MODELS_CATALOG[target_key]['name']}*...",
+        parse_mode="Markdown",
+    )
+
+    success, msg = await init_agent(target_key)
+    if success:
+        await status_msg.edit_text(f"✅ {msg}\n_{MODELS_CATALOG[target_key]['desc']}_", parse_mode="Markdown")
+    else:
+        await status_msg.edit_text(
+            f"❌ Gagal mengalihkan model:\n`{msg}`\n\n"
+            f"Pastikan token `{MODELS_CATALOG[target_key]['env_key']}` sudah diisi di file `.env`.",
+            parse_mode="Markdown",
+        )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -97,12 +224,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
+    active_model_name = MODELS_CATALOG.get(current_model_key, {}).get("name", "AI Agent")
+
     # Kirim status "Typing..."
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action=ChatAction.TYPING
     )
     status_msg = await update.message.reply_text(
-        "⏳ *Antigravity sedang memproses instruksi Anda...*",
+        f"⏳ *{active_model_name}* sedang memproses...",
         parse_mode="Markdown",
     )
 
@@ -116,15 +245,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 full_reply += token
 
             if not full_reply.strip():
-                full_reply = "(Antigravity selesai memproses tanpa pesan balasan teks)"
+                full_reply = "(AI selesai memproses tanpa balasan teks)"
         else:
-            # Fallback jika Antigravity belum terhubung karena belum ada API Key
+            active_info = MODELS_CATALOG.get(current_model_key, {})
             full_reply = (
-                "⚠️ *Antigravity AI Agent belum aktif!*\n\n"
-                f"Pesan Anda diterima: \"_{user_text}_\"\n\n"
-                "📌 *Penyebab:* GEMINI_API_KEY belum diset di file `.env`.\n"
-                "👉 Dapatkan kunci gratis di: [Google AI Studio](https://aistudio.google.com/app/apikey)\n"
-                "Lalu tambahkan ke `.env`:\n`GEMINI_API_KEY=AIzaSy...`"
+                f"⚠️ *{active_info.get('name')} belum aktif!*\n\n"
+                f"Kunci `{active_info.get('env_key')}` belum diset di file `.env`.\n"
+                "Ketik `/model` untuk memilih model lain atau periksa konfigurasi `.env` Anda."
             )
 
         # Telegram limit 4096 karakter per pesan
@@ -137,9 +264,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error memproses pesan: {e}")
-        await status_msg.edit_text(
-            f"❌ Terjadi kesalahan saat memproses:\n`{str(e)}`",
-        )
+        await status_msg.edit_text(f"❌ Terjadi kesalahan saat memproses:\n`{str(e)}`")
 
 
 async def run_bot_loop(app):
@@ -151,7 +276,6 @@ async def run_bot_loop(app):
 
         stop_event = asyncio.Event()
 
-        # Handle SIGINT / SIGTERM gracefully jika didukung
         loop = asyncio.get_running_loop()
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -165,52 +289,41 @@ async def run_bot_loop(app):
             pass
         finally:
             print("\n[!] Menghentikan bot Telegram...")
+            # Tutup agent
+            global agent_context_manager, antigravity_agent
+            if agent_context_manager is not None:
+                try:
+                    await agent_context_manager.__aexit__(None, None, None)
+                except Exception:
+                    pass
             await app.updater.stop()
             await app.stop()
 
 
 async def main():
-    global antigravity_agent
-
     if not TELEGRAM_BOT_TOKEN:
         print("❌ ERROR: TELEGRAM_BOT_TOKEN belum diatur!")
         print("Silakan buat file .env atau export TELEGRAM_BOT_TOKEN='token_anda'")
         return
 
-    print("=" * 60)
-    print("🤖 Memulai XFSCI Antigravity Telegram Bot...")
-    print(f"Bot Token: {TELEGRAM_BOT_TOKEN[:10]}...[TERSEMBUNYI]")
-    print("=" * 60)
+    print("=" * 65)
+    print("🤖 Memulai XFSCI Dual-Brain Antigravity Telegram Bot")
+    print("⚡ Model 1: Gemini 3.8 Flash (Fast & Real-time)")
+    print("🧠 Model 2: Claude Opus 4.6 (Deep Reasoning & Thinking)")
+    print(f"Bot Token : {TELEGRAM_BOT_TOKEN[:10]}...[TERSEMBUNYI]")
+    print("=" * 65)
+
+    # Inisialisasi default model (Gemini 3.8 Flash terlebih dahulu)
+    success, msg = await init_agent("gemini")
+    if not success and ANTHROPIC_API_KEY:
+        # Coba fallback ke Claude jika Gemini gagal tapi Claude ada
+        logger.info("Mencoba fallback inisialisasi ke Claude Opus...")
+        await init_agent("claude")
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("model", model_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Cek apakah GEMINI_API_KEY tersedia untuk mengaktifkan Agent
-    if ANTIGRAVITY_AVAILABLE and GEMINI_API_KEY:
-        try:
-            print("Menginisialisasi Google Antigravity Agent dengan Gemini API Key...")
-            agent_config = LocalAgentConfig(
-                api_key=GEMINI_API_KEY,
-                system_instructions=(
-                    "Anda adalah asisten AI Antigravity untuk sistem XFSCI "
-                    "(Explainable Federated Self-Healing Cloud Infrastructure). "
-                    "Bantu pengguna mengelola, mendiagnosis, dan memonitor cluster."
-                ),
-                capabilities=CapabilitiesConfig(),
-            )
-            async with Agent(agent_config) as agent:
-                antigravity_agent = agent
-                print("✅ Antigravity Agent berhasil terhubung!")
-                await run_bot_loop(app)
-                return
-        except Exception as e:
-            print(f"⚠️ Gagal menghubungkan Antigravity Agent: {e}")
-            print("Menjalankan bot dalam mode standalone...")
-    elif not GEMINI_API_KEY:
-        print("⚠️ Catatan: GEMINI_API_KEY belum diset di .env")
-        print("👉 Bot tetap berjalan untuk menerima perintah.")
-        print("👉 Tambahkan GEMINI_API_KEY ke .env untuk mengaktifkan kecerdasan Antigravity.")
 
     await run_bot_loop(app)
 
